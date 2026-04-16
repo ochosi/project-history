@@ -1,0 +1,722 @@
+#!/usr/bin/env python3
+"""
+Generate project history from git commits + GitHub data
+
+This tool analyzes git history and correlates it with GitHub issues and PRs
+to generate a comprehensive project history with narrative documentation.
+
+Features:
+- Commit→PR correlation
+- Importance scoring
+- Theme detection
+- Resumable processing with state file
+- Incremental timeline and narrative generation
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple, Any
+
+try:
+    import subprocess
+except ImportError:
+    print("Error: subprocess module required", file=sys.stderr)
+    sys.exit(1)
+
+
+class StateManager:
+    """Manages resumable state for history generation."""
+
+    def __init__(self, state_file: Path):
+        self.state_file = state_file
+        self.state = self.load()
+
+    def load(self) -> Dict[str, Any]:
+        """Load state from file or return default."""
+        if self.state_file.exists():
+            with open(self.state_file, 'r') as f:
+                return json.load(f)
+        return {
+            "version": "1.0",
+            "last_updated": None,
+            "phases_completed": [],
+            "correlation_done": False,
+            "timelines_generated": [],
+            "narratives_written": [],
+        }
+
+    def save(self):
+        """Save current state to file."""
+        self.state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.state_file, 'w') as f:
+            json.dump(self.state, f, indent=2)
+
+    def mark_phase_complete(self, phase: str):
+        """Mark a phase as completed."""
+        if phase not in self.state["phases_completed"]:
+            self.state["phases_completed"].append(phase)
+        self.save()
+
+
+class GitAnalyzer:
+    """Analyzes git repository history."""
+
+    def __init__(self, repo_path: Path, verbose: bool = False):
+        self.repo_path = repo_path
+        self.verbose = verbose
+
+    def log(self, message: str):
+        """Log message if verbose."""
+        if self.verbose:
+            print(message)
+
+    def get_all_commits(self) -> List[Dict[str, Any]]:
+        """Get all commits from git history."""
+        self.log("Fetching all commits from git history...")
+
+        # Format: %H|%an|%ae|%at|%s|%b
+        cmd = [
+            'git', 'log', '--all', '--format=%H|%an|%ae|%at|%s|%b%x00',
+            '--date=iso-strict'
+        ]
+
+        result = subprocess.run(
+            cmd,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        commits = []
+        for entry in result.stdout.split('\x00'):
+            if not entry.strip():
+                continue
+
+            parts = entry.split('|', 5)
+            if len(parts) < 5:
+                continue
+
+            sha, author, email, timestamp, subject = parts[:5]
+            body = parts[5] if len(parts) > 5 else ""
+
+            commits.append({
+                'sha': sha.strip(),
+                'author': author.strip(),
+                'email': email.strip(),
+                'date': datetime.fromtimestamp(int(timestamp), tz=timezone.utc),
+                'subject': subject.strip(),
+                'body': body.strip(),
+                'message': f"{subject.strip()}\n{body.strip()}".strip()
+            })
+
+        self.log(f"Found {len(commits)} commits")
+        return commits
+
+    def get_commit_stats(self, sha: str) -> Dict[str, int]:
+        """Get file change statistics for a commit."""
+        cmd = ['git', 'show', '--stat', '--format=', sha]
+        result = subprocess.run(
+            cmd,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True
+        )
+
+        # Parse stats
+        lines = result.stdout.strip().split('\n')
+        files_changed = 0
+        insertions = 0
+        deletions = 0
+
+        for line in lines:
+            if 'file' in line and 'changed' in line:
+                match = re.search(r'(\d+) file', line)
+                if match:
+                    files_changed = int(match.group(1))
+                match = re.search(r'(\d+) insertion', line)
+                if match:
+                    insertions = int(match.group(1))
+                match = re.search(r'(\d+) deletion', line)
+                if match:
+                    deletions = int(match.group(1))
+
+        return {
+            'files_changed': files_changed,
+            'insertions': insertions,
+            'deletions': deletions
+        }
+
+
+class PRCorrelator:
+    """Correlates git commits with GitHub PRs."""
+
+    PR_PATTERNS = [
+        r'\(#(\d+)\)',           # (#123)
+        r'#(\d+)',               # #123
+        r'fixes #(\d+)',         # fixes #123
+        r'closes #(\d+)',        # closes #123
+        r'merge pull request #(\d+)',  # merge pull request #123
+    ]
+
+    def __init__(self, history_path: Path, verbose: bool = False):
+        self.history_path = history_path
+        self.verbose = verbose
+        self.prs = self.load_prs()
+
+    def log(self, message: str):
+        """Log message if verbose."""
+        if self.verbose:
+            print(message)
+
+    def load_prs(self) -> Dict[int, Dict[str, Any]]:
+        """Load all PR metadata from markdown files."""
+        self.log("Loading PR metadata...")
+        prs = {}
+
+        pr_dir = self.history_path / "pull-requests"
+        if not pr_dir.exists():
+            return prs
+
+        for pr_file in pr_dir.rglob("*.md"):
+            try:
+                with open(pr_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Extract frontmatter
+                if not content.startswith('---'):
+                    continue
+
+                parts = content.split('---', 2)
+                if len(parts) < 3:
+                    continue
+
+                # Parse frontmatter (simple YAML-like parsing)
+                frontmatter = {}
+                for line in parts[1].strip().split('\n'):
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        key = key.strip()
+                        value = value.strip()
+
+                        # Remove quotes
+                        if value.startswith('"') and value.endswith('"'):
+                            value = value[1:-1]
+                        elif value.startswith('[') and value.endswith(']'):
+                            # Parse list
+                            value = [v.strip().strip('"') for v in value[1:-1].split(',')]
+
+                        frontmatter[key] = value
+
+                pr_num = int(frontmatter.get('number', 0))
+                if pr_num > 0:
+                    prs[pr_num] = {
+                        **frontmatter,
+                        'body': parts[2].strip(),
+                        'file_path': str(pr_file)
+                    }
+            except Exception as e:
+                if self.verbose:
+                    print(f"Warning: Failed to parse {pr_file}: {e}")
+
+        self.log(f"Loaded {len(prs)} PRs")
+        return prs
+
+    def extract_pr_number(self, message: str) -> Optional[int]:
+        """Extract PR number from commit message."""
+        for pattern in self.PR_PATTERNS:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            if matches:
+                return int(matches[0])
+        return None
+
+    def correlate_commits(self, commits: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Build mapping of commit SHA → PR number."""
+        self.log("Correlating commits to PRs...")
+
+        correlation = {}
+        matched = 0
+
+        for commit in commits:
+            pr_num = self.extract_pr_number(commit['message'])
+            if pr_num and pr_num in self.prs:
+                correlation[commit['sha']] = pr_num
+                matched += 1
+
+        self.log(f"Matched {matched}/{len(commits)} commits to PRs")
+        return correlation
+
+
+class ThemeDetector:
+    """Detects themes and categorizes changes."""
+
+    THEMES = {
+        'architecture': {
+            'keywords': ['pipeline', 'manifest', 'format', 'schema', 'architecture', 'object store', 'content store'],
+            'description': 'Core architectural changes'
+        },
+        'isolation': {
+            'keywords': ['nspawn', 'bubblewrap', 'bwrap', 'vm', 'container', 'sandbox', 'isolation', 'chroot'],
+            'description': 'Build isolation and containerization'
+        },
+        'stages': {
+            'keywords': ['stage:', 'org.osbuild.', 'new stage'],
+            'description': 'Build stage additions and modifications'
+        },
+        'assemblers': {
+            'keywords': ['assembler', 'qcow2', 'raw', 'tar', 'ostree'],
+            'description': 'Output assembler changes'
+        },
+        'sources': {
+            'keywords': ['source:', 'curl', 'org.osbuild.files', 'download'],
+            'description': 'Input source handling'
+        },
+        'performance': {
+            'keywords': ['perf', 'cache', 'optimization', 'speed', 'fast', 'parallel'],
+            'description': 'Performance improvements'
+        },
+        'testing': {
+            'keywords': ['test:', 'ci:', 'pytest', 'unittest', 'coverage'],
+            'description': 'Testing and CI infrastructure'
+        },
+        'dnf': {
+            'keywords': ['dnf', 'rpm', 'package', 'depsolve', 'dependency'],
+            'description': 'Package management and DNF integration'
+        },
+        'api': {
+            'keywords': ['api:', 'interface', 'cli', 'command'],
+            'description': 'API and command-line interface'
+        },
+        'security': {
+            'keywords': ['security', 'selinux', 'permission', 'capability'],
+            'description': 'Security and permissions'
+        }
+    }
+
+    def detect_themes(self, message: str) -> Set[str]:
+        """Detect themes in a commit message."""
+        msg_lower = message.lower()
+        themes = set()
+
+        for theme, config in self.THEMES.items():
+            for keyword in config['keywords']:
+                if keyword in msg_lower:
+                    themes.add(theme)
+                    break
+
+        return themes
+
+
+class ImportanceScorer:
+    """Scores the importance of commits and PRs."""
+
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+
+    def score_commit(self, commit: Dict[str, Any], pr_data: Optional[Dict[str, Any]] = None) -> int:
+        """Score a commit's importance (0-100)."""
+        score = 0
+
+        # Message length factor (longer often means more significant)
+        msg_len = len(commit['message'])
+        if msg_len > 500:
+            score += 5
+        elif msg_len > 200:
+            score += 3
+
+        # Keywords indicating importance
+        important_keywords = ['breaking', 'major', 'important', 'critical', 'fix', 'add']
+        msg_lower = commit['message'].lower()
+        for keyword in important_keywords:
+            if keyword in msg_lower:
+                score += 3
+
+        # Architectural keywords
+        arch_keywords = ['format', 'schema', 'manifest', 'architecture', 'design']
+        for keyword in arch_keywords:
+            if keyword in msg_lower:
+                score += 5
+
+        # PR data bonus
+        if pr_data:
+            # PR description length
+            body_len = len(pr_data.get('body', ''))
+            if body_len > 2000:
+                score += 10
+            elif body_len > 1000:
+                score += 5
+
+            # Labels
+            labels = pr_data.get('labels', [])
+            if isinstance(labels, list):
+                if 'breaking-change' in labels:
+                    score += 15
+                if 'enhancement' in labels:
+                    score += 5
+                if 'bug' in labels:
+                    score += 3
+
+        return min(score, 100)
+
+    def score_pr(self, pr_data: Dict[str, Any]) -> int:
+        """Score a PR's importance."""
+        score = 0
+
+        # Discussion length
+        body_len = len(pr_data.get('body', ''))
+        if body_len > 3000:
+            score += 15
+        elif body_len > 1500:
+            score += 10
+        elif body_len > 500:
+            score += 5
+
+        # Count discussion markers
+        discussion_count = pr_data.get('body', '').count('###')
+        score += min(discussion_count * 2, 10)
+
+        # Labels
+        labels = pr_data.get('labels', [])
+        if isinstance(labels, list):
+            if 'breaking-change' in labels:
+                score += 20
+            if 'enhancement' in labels:
+                score += 10
+            if 'design' in labels or 'architecture' in labels:
+                score += 15
+
+        # Title keywords
+        title = pr_data.get('title', '').lower()
+        if any(kw in title for kw in ['format', 'schema', 'manifest', 'breaking']):
+            score += 10
+
+        return min(score, 100)
+
+
+class HistoryGenerator:
+    """Main history generation coordinator."""
+
+    PERIODS = {
+        'genesis': {
+            'start': '2019-01-01',
+            'end': '2019-06-30',
+            'description': 'Initial prototype and core architecture'
+        },
+        'foundation': {
+            'start': '2019-07-01',
+            'end': '2020-12-31',
+            'description': 'Manifest format, schema, and first production use'
+        },
+        'maturation': {
+            'start': '2021-01-01',
+            'end': '2022-12-31',
+            'description': 'Stabilization and expanded capabilities'
+        },
+        'production-scale': {
+            'start': '2023-01-01',
+            'end': '2023-12-31',
+            'description': 'RHEL integration and performance optimization'
+        },
+        'modern-features': {
+            'start': '2024-01-01',
+            'end': '2025-12-31',
+            'description': 'VM support, DNF5, and advanced isolation'
+        },
+        'current': {
+            'start': '2026-01-01',
+            'end': '2030-12-31',
+            'description': 'Current development'
+        }
+    }
+
+    def __init__(self, repo_path: Path, history_path: Path, output_path: Path,
+                 verbose: bool = False, resume: bool = True):
+        self.repo_path = repo_path
+        self.history_path = history_path
+        self.output_path = output_path
+        self.verbose = verbose
+
+        self.state = StateManager(output_path / '.history-gen-state.json')
+        self.git = GitAnalyzer(repo_path, verbose)
+        self.correlator = PRCorrelator(history_path, verbose)
+        self.theme_detector = ThemeDetector()
+        self.scorer = ImportanceScorer(verbose)
+
+        self.commits = []
+        self.correlation = {}
+        self.importance_scores = {}
+
+        if not resume:
+            self.state.state = StateManager(output_path / '.history-gen-state.json').state
+
+    def log(self, message: str, force: bool = False):
+        """Log message."""
+        if self.verbose or force:
+            print(message)
+
+    def load_or_generate_correlation(self) -> Dict[str, Any]:
+        """Load correlation data or generate it."""
+        correlation_file = self.output_path / 'data' / 'correlation.json'
+
+        if correlation_file.exists() and self.state.state.get('correlation_done'):
+            self.log("Loading existing correlation data...")
+            with open(correlation_file, 'r') as f:
+                data = json.load(f)
+                self.commits = data['commits']
+                # Convert date strings back to datetime
+                for commit in self.commits:
+                    commit['date'] = datetime.fromisoformat(commit['date'])
+                self.correlation = data['correlation']
+                return data
+
+        self.log("Generating correlation data...", force=True)
+
+        # Get all commits
+        self.commits = self.git.get_all_commits()
+
+        # Correlate to PRs
+        self.correlation = self.correlator.correlate_commits(self.commits)
+
+        # Save correlation data
+        correlation_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(correlation_file, 'w') as f:
+            json.dump({
+                'commits': [{
+                    **c,
+                    'date': c['date'].isoformat()
+                } for c in self.commits],
+                'correlation': self.correlation
+            }, f, indent=2)
+
+        self.state.state['correlation_done'] = True
+        self.state.save()
+
+        return {'commits': self.commits, 'correlation': self.correlation}
+
+    def group_commits_by_period(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Group commits into time periods."""
+        grouped = defaultdict(list)
+
+        for commit in self.commits:
+            commit_date = commit['date']
+
+            for period_name, period_config in self.PERIODS.items():
+                start = datetime.fromisoformat(period_config['start']).replace(tzinfo=timezone.utc)
+                end = datetime.fromisoformat(period_config['end']).replace(tzinfo=timezone.utc)
+
+                if start <= commit_date <= end:
+                    grouped[period_name].append(commit)
+                    break
+
+        return dict(grouped)
+
+    def generate_timeline(self, period_name: str, commits: List[Dict[str, Any]]):
+        """Generate timeline markdown for a period."""
+        self.log(f"Generating timeline for {period_name}...")
+
+        period_config = self.PERIODS[period_name]
+
+        output = [f"# {period_name.replace('-', ' ').title()} Timeline"]
+        output.append(f"\n**Period**: {period_config['start']} to {period_config['end']}")
+        output.append(f"\n**Description**: {period_config['description']}\n")
+        output.append(f"\n**Total Commits**: {len(commits)}\n")
+
+        # Group by month
+        by_month = defaultdict(list)
+        for commit in sorted(commits, key=lambda c: c['date']):
+            month_key = commit['date'].strftime('%Y-%m')
+            by_month[month_key].append(commit)
+
+        # Generate monthly sections
+        for month in sorted(by_month.keys()):
+            month_commits = by_month[month]
+            output.append(f"\n## {month} ({len(month_commits)} commits)\n")
+
+            for commit in month_commits:
+                pr_num = self.correlation.get(commit['sha'])
+                pr_ref = f" [#{pr_num}]" if pr_num else ""
+
+                # Score and mark important commits
+                pr_data = self.correlator.prs.get(pr_num) if pr_num else None
+                score = self.scorer.score_commit(commit, pr_data)
+                importance_marker = " ⭐" if score >= 20 else ""
+
+                date_str = commit['date'].strftime('%Y-%m-%d')
+                output.append(
+                    f"- **{date_str}**: {commit['subject']}{pr_ref}{importance_marker} "
+                    f"_by @{commit['author']}_\n"
+                )
+
+        # Write timeline file
+        timeline_file = self.output_path / 'timeline' / f'{period_name}.md'
+        timeline_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(timeline_file, 'w') as f:
+            f.write('\n'.join(output))
+
+        self.log(f"Timeline saved to {timeline_file}")
+
+        # Update state
+        if period_name not in self.state.state['timelines_generated']:
+            self.state.state['timelines_generated'].append(period_name)
+            self.state.save()
+
+    def analyze_period_themes(self, commits: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """Analyze themes in a period."""
+        themed = defaultdict(list)
+
+        for commit in commits:
+            themes = self.theme_detector.detect_themes(commit['message'])
+            for theme in themes:
+                themed[theme].append(commit)
+
+        return dict(themed)
+
+    def generate_all_timelines(self):
+        """Generate timelines for all periods."""
+        self.log("Generating timelines for all periods...", force=True)
+
+        grouped = self.group_commits_by_period()
+
+        for period_name in self.PERIODS.keys():
+            if period_name in self.state.state['timelines_generated']:
+                self.log(f"Skipping {period_name} (already generated)")
+                continue
+
+            period_commits = grouped.get(period_name, [])
+            if period_commits:
+                self.generate_timeline(period_name, period_commits)
+
+    def save_analysis_data(self):
+        """Save analysis data for later use."""
+        data_dir = self.output_path / 'data'
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save importance scores for top PRs
+        pr_scores = {}
+        for pr_num, pr_data in self.correlator.prs.items():
+            score = self.scorer.score_pr(pr_data)
+            if score >= 15:  # Only save significant ones
+                pr_scores[pr_num] = {
+                    'score': score,
+                    'title': pr_data.get('title'),
+                    'author': pr_data.get('author'),
+                    'merged': pr_data.get('merged'),
+                    'created': pr_data.get('created')
+                }
+
+        with open(data_dir / 'important_prs.json', 'w') as f:
+            json.dump(pr_scores, f, indent=2)
+
+        self.log(f"Saved {len(pr_scores)} important PRs to data/important_prs.json")
+
+        # Save theme analysis
+        grouped = self.group_commits_by_period()
+        theme_analysis = {}
+
+        for period_name, period_commits in grouped.items():
+            themes = self.analyze_period_themes(period_commits)
+            theme_analysis[period_name] = {
+                theme: len(commits) for theme, commits in themes.items()
+            }
+
+        with open(data_dir / 'theme_analysis.json', 'w') as f:
+            json.dump(theme_analysis, f, indent=2)
+
+        self.log("Saved theme analysis to data/theme_analysis.json")
+
+    def run(self, phase: Optional[str] = None):
+        """Run history generation."""
+        self.log("=== OSBuild History Generator ===", force=True)
+        self.log(f"Repository: {self.repo_path}", force=True)
+        self.log(f"Output: {self.output_path}", force=True)
+        self.log("", force=True)
+
+        # Phase 1: Correlation
+        if phase in [None, 'correlation']:
+            self.load_or_generate_correlation()
+            self.log("", force=True)
+
+        # Phase 2: Timelines
+        if phase in [None, 'timelines']:
+            self.generate_all_timelines()
+            self.log("", force=True)
+
+        # Phase 3: Analysis data
+        if phase in [None, 'analysis']:
+            self.save_analysis_data()
+            self.log("", force=True)
+
+        self.log("=== Generation complete ===", force=True)
+        self.log(f"State saved to {self.state.state_file}", force=True)
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Generate osbuild project history",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        '--repo',
+        default='.',
+        help='Path to git repository (default: current directory)'
+    )
+    parser.add_argument(
+        '--history',
+        default='./history',
+        help='Path to history archive (default: ./history)'
+    )
+    parser.add_argument(
+        '--output',
+        default='./history/draft',
+        help='Output directory (default: ./history/draft)'
+    )
+    parser.add_argument(
+        '--phase',
+        choices=['correlation', 'timelines', 'analysis'],
+        help='Run only specific phase'
+    )
+    parser.add_argument(
+        '--no-resume',
+        action='store_true',
+        help='Start fresh (ignore existing state)'
+    )
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Verbose output'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        generator = HistoryGenerator(
+            repo_path=Path(args.repo),
+            history_path=Path(args.history),
+            output_path=Path(args.output),
+            verbose=args.verbose,
+            resume=not args.no_resume
+        )
+        generator.run(phase=args.phase)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
