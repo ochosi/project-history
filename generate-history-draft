@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate project history from git commits + GitHub data
+Generate project history from git commits + GitHub/GitLab/Jira data
 
-This tool analyzes git history and correlates it with GitHub issues and PRs
-to generate a comprehensive project history with narrative documentation.
+This tool analyzes git history and correlates it with GitHub PRs, GitLab MRs,
+and Jira tickets to generate a comprehensive project history with narrative
+documentation.
 
 Features:
-- Commit→PR correlation
+- Commit→PR/MR/Jira correlation
+- Multi-platform support (GitHub, GitLab, Jira)
 - Importance scoring
 - Theme detection
 - Resumable processing with state file
@@ -155,10 +157,11 @@ class GitAnalyzer:
         }
 
 
-class PRCorrelator:
-    """Correlates git commits with GitHub PRs."""
+class IssueCorrelator:
+    """Correlates git commits with GitHub PRs, GitLab MRs, and Jira tickets."""
 
-    PR_PATTERNS = [
+    # GitHub PR patterns
+    GITHUB_PR_PATTERNS = [
         r'\(#(\d+)\)',           # (#123)
         r'#(\d+)',               # #123
         r'fixes #(\d+)',         # fixes #123
@@ -166,19 +169,35 @@ class PRCorrelator:
         r'merge pull request #(\d+)',  # merge pull request #123
     ]
 
+    # GitLab MR patterns
+    GITLAB_MR_PATTERNS = [
+        r'\(!(\d+)\)',           # (!123)
+        r'!(\d+)',               # !123
+        r'fixes !(\d+)',         # fixes !123
+        r'closes !(\d+)',        # closes !123
+        r'merge request !(\d+)', # merge request !123
+    ]
+
+    # Jira ticket patterns (matches PROJ-123, ABC-456, etc.)
+    JIRA_PATTERNS = [
+        r'\b([A-Z][A-Z0-9]+-\d+)\b',  # PROJ-123, ABC-456
+    ]
+
     def __init__(self, history_path: Path, verbose: bool = False):
         self.history_path = history_path
         self.verbose = verbose
-        self.prs = self.load_prs()
+        self.github_prs = self.load_github_prs()
+        self.gitlab_mrs = self.load_gitlab_mrs()
+        self.jira_issues = self.load_jira_issues()
 
     def log(self, message: str):
         """Log message if verbose."""
         if self.verbose:
             print(message)
 
-    def load_prs(self) -> Dict[int, Dict[str, Any]]:
-        """Load all PR metadata from markdown files."""
-        self.log("Loading PR metadata...")
+    def load_github_prs(self) -> Dict[int, Dict[str, Any]]:
+        """Load all GitHub PR metadata from markdown files."""
+        self.log("Loading GitHub PR metadata...")
         prs = {}
 
         pr_dir = self.history_path / "pull-requests"
@@ -186,72 +205,162 @@ class PRCorrelator:
             return prs
 
         for pr_file in pr_dir.rglob("*.md"):
-            try:
-                with open(pr_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                # Extract frontmatter
-                if not content.startswith('---'):
-                    continue
-
-                parts = content.split('---', 2)
-                if len(parts) < 3:
-                    continue
-
-                # Parse frontmatter (simple YAML-like parsing)
-                frontmatter = {}
-                for line in parts[1].strip().split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        key = key.strip()
-                        value = value.strip()
-
-                        # Remove quotes
-                        if value.startswith('"') and value.endswith('"'):
-                            value = value[1:-1]
-                        elif value.startswith('[') and value.endswith(']'):
-                            # Parse list
-                            value = [v.strip().strip('"') for v in value[1:-1].split(',')]
-
-                        frontmatter[key] = value
-
-                pr_num = int(frontmatter.get('number', 0))
+            metadata = self._parse_markdown_metadata(pr_file)
+            if metadata and metadata.get('type') == 'pull_request':
+                pr_num = int(metadata.get('number', 0))
                 if pr_num > 0:
-                    prs[pr_num] = {
-                        **frontmatter,
-                        'body': parts[2].strip(),
-                        'file_path': str(pr_file)
-                    }
-            except Exception as e:
-                if self.verbose:
-                    print(f"Warning: Failed to parse {pr_file}: {e}")
+                    prs[pr_num] = metadata
 
-        self.log(f"Loaded {len(prs)} PRs")
+        self.log(f"Loaded {len(prs)} GitHub PRs")
         return prs
 
-    def extract_pr_number(self, message: str) -> Optional[int]:
-        """Extract PR number from commit message."""
-        for pattern in self.PR_PATTERNS:
-            matches = re.findall(pattern, message, re.IGNORECASE)
-            if matches:
-                return int(matches[0])
-        return None
+    def load_gitlab_mrs(self) -> Dict[int, Dict[str, Any]]:
+        """Load all GitLab MR metadata from markdown files."""
+        self.log("Loading GitLab MR metadata...")
+        mrs = {}
 
-    def correlate_commits(self, commits: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Build mapping of commit SHA → PR number."""
-        self.log("Correlating commits to PRs...")
+        mr_dir = self.history_path / "merge-requests"
+        if not mr_dir.exists():
+            return mrs
+
+        for mr_file in mr_dir.rglob("*.md"):
+            metadata = self._parse_markdown_metadata(mr_file)
+            if metadata and metadata.get('type') == 'merge_request':
+                mr_num = int(metadata.get('number', 0))
+                if mr_num > 0:
+                    mrs[mr_num] = metadata
+
+        self.log(f"Loaded {len(mrs)} GitLab MRs")
+        return mrs
+
+    def load_jira_issues(self) -> Dict[str, Dict[str, Any]]:
+        """Load all Jira issue metadata from markdown files."""
+        self.log("Loading Jira issue metadata...")
+        issues = {}
+
+        jira_dir = self.history_path / "jira-issues"
+        if not jira_dir.exists():
+            return issues
+
+        for issue_file in jira_dir.rglob("*.md"):
+            metadata = self._parse_markdown_metadata(issue_file)
+            if metadata and metadata.get('type') == 'jira_issue':
+                key = metadata.get('key', '')
+                if key:
+                    issues[key] = metadata
+
+        self.log(f"Loaded {len(issues)} Jira issues")
+        return issues
+
+    def _parse_markdown_metadata(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """Parse metadata from markdown file frontmatter."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract frontmatter
+            if not content.startswith('---'):
+                return None
+
+            parts = content.split('---', 2)
+            if len(parts) < 3:
+                return None
+
+            # Parse frontmatter (simple YAML-like parsing)
+            frontmatter = {}
+            for line in parts[1].strip().split('\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    # Remove quotes
+                    if value.startswith('"') and value.endswith('"'):
+                        value = value[1:-1]
+                    elif value.startswith('[') and value.endswith(']'):
+                        # Parse list
+                        value = [v.strip().strip('"') for v in value[1:-1].split(',') if v.strip()]
+
+                    frontmatter[key] = value
+
+            frontmatter['body'] = parts[2].strip()
+            frontmatter['file_path'] = str(file_path)
+            return frontmatter
+
+        except Exception as e:
+            if self.verbose:
+                print(f"Warning: Failed to parse {file_path}: {e}")
+            return None
+
+    def extract_references(self, message: str) -> Dict[str, Any]:
+        """Extract all references (GitHub PRs, GitLab MRs, Jira tickets) from commit message."""
+        refs = {
+            'github_pr': None,
+            'gitlab_mr': None,
+            'jira_issues': []
+        }
+
+        # Extract GitHub PR
+        for pattern in self.GITHUB_PR_PATTERNS:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            if matches and not refs['github_pr']:
+                pr_num = int(matches[0])
+                if pr_num in self.github_prs:
+                    refs['github_pr'] = pr_num
+                    break
+
+        # Extract GitLab MR
+        for pattern in self.GITLAB_MR_PATTERNS:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            if matches and not refs['gitlab_mr']:
+                mr_num = int(matches[0])
+                if mr_num in self.gitlab_mrs:
+                    refs['gitlab_mr'] = mr_num
+                    break
+
+        # Extract Jira issues
+        for pattern in self.JIRA_PATTERNS:
+            matches = re.findall(pattern, message, re.IGNORECASE)
+            for match in matches:
+                if match in self.jira_issues:
+                    refs['jira_issues'].append(match)
+
+        return refs
+
+    def correlate_commits(self, commits: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Build mapping of commit SHA → references (PRs, MRs, Jira tickets)."""
+        self.log("Correlating commits to PRs, MRs, and Jira issues...")
 
         correlation = {}
-        matched = 0
+        matched_github = 0
+        matched_gitlab = 0
+        matched_jira = 0
 
         for commit in commits:
-            pr_num = self.extract_pr_number(commit['message'])
-            if pr_num and pr_num in self.prs:
-                correlation[commit['sha']] = pr_num
-                matched += 1
+            refs = self.extract_references(commit['message'])
 
-        self.log(f"Matched {matched}/{len(commits)} commits to PRs")
+            # Only store if there are references
+            if refs['github_pr'] or refs['gitlab_mr'] or refs['jira_issues']:
+                correlation[commit['sha']] = refs
+
+                if refs['github_pr']:
+                    matched_github += 1
+                if refs['gitlab_mr']:
+                    matched_gitlab += 1
+                if refs['jira_issues']:
+                    matched_jira += 1
+
+        self.log(f"Matched {matched_github} commits to GitHub PRs")
+        self.log(f"Matched {matched_gitlab} commits to GitLab MRs")
+        self.log(f"Matched {matched_jira} commits to Jira issues")
+
         return correlation
+
+    # Maintain backward compatibility
+    @property
+    def prs(self):
+        """Backward compatibility: return GitHub PRs."""
+        return self.github_prs
 
 
 class ThemeDetector:
@@ -445,7 +554,7 @@ class HistoryGenerator:
 
         self.state = StateManager(output_path / '.history-gen-state.json')
         self.git = GitAnalyzer(repo_path, verbose)
-        self.correlator = PRCorrelator(history_path, verbose)
+        self.correlator = IssueCorrelator(history_path, verbose)
         self.theme_detector = ThemeDetector()
         self.scorer = ImportanceScorer(verbose)
 
@@ -540,17 +649,39 @@ class HistoryGenerator:
             output.append(f"\n## {month} ({len(month_commits)} commits)\n")
 
             for commit in month_commits:
-                pr_num = self.correlation.get(commit['sha'])
-                pr_ref = f" [#{pr_num}]" if pr_num else ""
+                refs = self.correlation.get(commit['sha'], {})
+                ref_strs = []
+
+                # Add GitHub PR reference
+                if refs.get('github_pr'):
+                    ref_strs.append(f"#{refs['github_pr']}")
+
+                # Add GitLab MR reference
+                if refs.get('gitlab_mr'):
+                    ref_strs.append(f"!{refs['gitlab_mr']}")
+
+                # Add Jira issue references
+                for jira_key in refs.get('jira_issues', []):
+                    ref_strs.append(jira_key)
+
+                ref_text = f" [{', '.join(ref_strs)}]" if ref_strs else ""
 
                 # Score and mark important commits
-                pr_data = self.correlator.prs.get(pr_num) if pr_num else None
-                score = self.scorer.score_commit(commit, pr_data)
+                # Try to get data from GitHub PR, GitLab MR, or first Jira issue
+                issue_data = None
+                if refs.get('github_pr'):
+                    issue_data = self.correlator.github_prs.get(refs['github_pr'])
+                elif refs.get('gitlab_mr'):
+                    issue_data = self.correlator.gitlab_mrs.get(refs['gitlab_mr'])
+                elif refs.get('jira_issues'):
+                    issue_data = self.correlator.jira_issues.get(refs['jira_issues'][0])
+
+                score = self.scorer.score_commit(commit, issue_data)
                 importance_marker = " ⭐" if score >= 20 else ""
 
                 date_str = commit['date'].strftime('%Y-%m-%d')
                 output.append(
-                    f"- **{date_str}**: {commit['subject']}{pr_ref}{importance_marker} "
+                    f"- **{date_str}**: {commit['subject']}{ref_text}{importance_marker} "
                     f"_by @{commit['author']}_\n"
                 )
 
@@ -599,9 +730,9 @@ class HistoryGenerator:
         data_dir = self.output_path / 'data'
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save importance scores for top PRs
+        # Save importance scores for top GitHub PRs
         pr_scores = {}
-        for pr_num, pr_data in self.correlator.prs.items():
+        for pr_num, pr_data in self.correlator.github_prs.items():
             score = self.scorer.score_pr(pr_data)
             if score >= 15:  # Only save significant ones
                 pr_scores[pr_num] = {
@@ -612,10 +743,48 @@ class HistoryGenerator:
                     'created': pr_data.get('created')
                 }
 
-        with open(data_dir / 'important_prs.json', 'w') as f:
-            json.dump(pr_scores, f, indent=2)
+        if pr_scores:
+            with open(data_dir / 'important_prs.json', 'w') as f:
+                json.dump(pr_scores, f, indent=2)
+            self.log(f"Saved {len(pr_scores)} important GitHub PRs to data/important_prs.json")
 
-        self.log(f"Saved {len(pr_scores)} important PRs to data/important_prs.json")
+        # Save importance scores for top GitLab MRs
+        mr_scores = {}
+        for mr_num, mr_data in self.correlator.gitlab_mrs.items():
+            score = self.scorer.score_pr(mr_data)
+            if score >= 15:  # Only save significant ones
+                mr_scores[mr_num] = {
+                    'score': score,
+                    'title': mr_data.get('title'),
+                    'author': mr_data.get('author'),
+                    'merged': mr_data.get('merged_at') is not None,
+                    'created': mr_data.get('created')
+                }
+
+        if mr_scores:
+            with open(data_dir / 'important_mrs.json', 'w') as f:
+                json.dump(mr_scores, f, indent=2)
+            self.log(f"Saved {len(mr_scores)} important GitLab MRs to data/important_mrs.json")
+
+        # Save Jira issues referenced in commits
+        jira_refs = {}
+        for sha, refs in self.correlation.items():
+            for jira_key in refs.get('jira_issues', []):
+                if jira_key not in jira_refs:
+                    jira_data = self.correlator.jira_issues.get(jira_key)
+                    if jira_data:
+                        jira_refs[jira_key] = {
+                            'key': jira_key,
+                            'summary': jira_data.get('summary'),
+                            'status': jira_data.get('status'),
+                            'issue_type': jira_data.get('issue_type'),
+                            'created': jira_data.get('created')
+                        }
+
+        if jira_refs:
+            with open(data_dir / 'jira_references.json', 'w') as f:
+                json.dump(jira_refs, f, indent=2)
+            self.log(f"Saved {len(jira_refs)} Jira references to data/jira_references.json")
 
         # Save theme analysis
         grouped = self.group_commits_by_period()
@@ -634,7 +803,7 @@ class HistoryGenerator:
 
     def run(self, phase: Optional[str] = None):
         """Run history generation."""
-        self.log("=== OSBuild History Generator ===", force=True)
+        self.log("=== Project History Generator ===", force=True)
         self.log(f"Repository: {self.repo_path}", force=True)
         self.log(f"Output: {self.output_path}", force=True)
         self.log("", force=True)
@@ -661,7 +830,7 @@ class HistoryGenerator:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Generate osbuild project history",
+        description="Generate project history from git commits and issues/PRs/MRs/tickets",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
