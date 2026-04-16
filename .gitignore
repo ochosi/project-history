@@ -11,6 +11,8 @@ ENV/
 # Generated history data (when using these tools in other projects)
 history/
 *.json
+!tests/fixtures/*.json
+!.project-history-config.json
 
 # IDE
 .vscode/

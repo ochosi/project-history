@@ -1,0 +1,21 @@
+{
+  "issues": [
+    {
+      "key": "TEST-1",
+      "fields": {
+        "summary": "Test Jira issue",
+        "description": "This is a test Jira issue",
+        "status": {"name": "Done"},
+        "issuetype": {"name": "Story"},
+        "priority": {"name": "Medium"},
+        "created": "2023-01-01T00:00:00.000+0000",
+        "updated": "2023-01-02T00:00:00.000+0000",
+        "resolutiondate": "2023-01-02T00:00:00.000+0000",
+        "reporter": {"displayName": "Test User"},
+        "assignee": {"displayName": "Assignee User"},
+        "labels": ["backend"],
+        "components": [{"name": "API"}]
+      }
+    }
+  ]
+}

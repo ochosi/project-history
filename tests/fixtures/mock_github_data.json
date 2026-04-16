@@ -1,0 +1,35 @@
+{
+  "issues": [
+    {
+      "number": 1,
+      "title": "Initial issue",
+      "state": "CLOSED",
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2023-01-02T00:00:00Z",
+      "closedAt": "2023-01-02T00:00:00Z",
+      "author": {"login": "testuser"},
+      "labels": {"nodes": [{"name": "bug"}]},
+      "body": "This is a test issue",
+      "comments": {"nodes": []}
+    }
+  ],
+  "pullRequests": [
+    {
+      "number": 1,
+      "title": "Add feature X",
+      "state": "MERGED",
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2023-01-02T00:00:00Z",
+      "closedAt": "2023-01-02T00:00:00Z",
+      "mergedAt": "2023-01-02T00:00:00Z",
+      "merged": true,
+      "author": {"login": "contributor"},
+      "baseRefName": "main",
+      "headRefName": "feature-x",
+      "labels": {"nodes": [{"name": "enhancement"}]},
+      "body": "Implements feature X",
+      "comments": {"nodes": []},
+      "reviews": {"nodes": []}
+    }
+  ]
+}
