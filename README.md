@@ -1,23 +1,45 @@
 # Project History Generator
 
-**Automated tools + AI-assisted workflow for creating comprehensive project histories from GitHub repositories**
+**Automated tools + AI-assisted workflow for creating comprehensive project histories from Git repositories**
 
-This repository contains everything you need to generate a detailed, human-readable history of any GitHub project, documenting its evolution, key decisions, and contributor stories.
+This repository contains everything you need to generate a detailed, human-readable history of any project, supporting **GitHub**, **GitLab**, and **Jira** integration.
 
 ## What This Does
 
-Transforms raw git/GitHub data into narrative documentation:
+Transforms raw git history and issue tracking data into narrative documentation:
 
-- **Input**: Any GitHub repository with git history
+- **Input**: Any Git repository with GitHub, GitLab, or both, plus optional Jira integration
 - **Output**: Comprehensive historical narratives organized by time period
 - **Process**: Automated data collection + AI-assisted analysis and writing
 - **Time**: ~30-48 hours of focused work for a mature multi-year project
 
 ## What's Included
 
-- `fetch-github-history` - Python script to fetch all GitHub issues and PRs as markdown
-- `generate-history-draft` - Python script to analyze git history and generate timelines
+- `setup-project` - Interactive configuration wizard for new projects
+- `fetch-github-history` - Fetch all GitHub issues and PRs as markdown
+- `fetch-gitlab-history` - Fetch all GitLab issues and merge requests as markdown
+- `fetch-jira-history` - Fetch all Jira tickets as markdown
+- `fetch-history` - Unified script to fetch from all configured platforms
+- `generate-history-draft` - Analyze git history and correlate with issues/PRs/MRs/tickets
 - `HISTORY_GENERATION_GUIDE.md` - Complete workflow with proven AI prompts
+- `CLAUDE.md` - Context for Claude Code users
+
+## Platform Support
+
+This tooling supports multiple platforms simultaneously:
+
+| Platform | What's Fetched | Reference Format | Required Token |
+|----------|----------------|------------------|----------------|
+| **GitHub** | Issues, Pull Requests, Reviews, Comments | `#123` | `GITHUB_TOKEN` |
+| **GitLab** | Issues, Merge Requests, Notes | `!123` | `GITLAB_TOKEN` |
+| **Jira** | Issues/Tickets, Comments | `PROJ-123` | `JIRA_TOKEN` |
+
+**Multi-platform projects**: You can enable any combination of platforms. For example:
+- GitHub for code hosting + Jira for project management
+- GitLab for everything (code + issues)
+- GitHub + GitLab (for projects that migrated between platforms)
+
+The `generate-history-draft` script automatically correlates git commits with references to PRs, MRs, and Jira tickets, creating a unified timeline.
 
 ## Quick Start
 
@@ -28,11 +50,20 @@ Transforms raw git/GitHub data into narrative documentation:
    pip install requests
    ```
 
-2. **GitHub Personal Access Token** with `repo` scope:
+2. **Authentication Tokens** (for the platforms you use):
+
+   **GitHub** - Personal Access Token with `repo` scope:
    - Go to: https://github.com/settings/tokens
    - Generate new token (classic)
    - Select scope: `repo` (Full control of private repositories)
-   - Copy the token
+
+   **GitLab** - Personal Access Token with `read_api` scope:
+   - Go to: GitLab Settings → Access Tokens
+   - Create token with `read_api` scope
+
+   **Jira** - API Token:
+   - Go to: Jira Account Settings → Security → API Tokens
+   - Create API token
 
 3. **AI Assistant** (Claude Code or Cursor):
    - This workflow is designed for AI pair programming
@@ -52,12 +83,30 @@ Transforms raw git/GitHub data into narrative documentation:
    "Please copy the scripts from /path/to/project-history/ into a tools/ directory in this project"
    ```
 
-3. **Set up your environment**:
+3. **Run the interactive setup**:
    ```bash
+   cd tools
+   ./setup-project
+   ```
+   
+   This will ask about:
+   - Git hosting platform (GitHub, GitLab, or both)
+   - Project identifiers (auto-detected from git remote if possible)
+   - Jira integration (optional)
+
+4. **Set up your authentication tokens**:
+   ```bash
+   # For GitHub
    export GITHUB_TOKEN="your_github_token_here"
+   
+   # For GitLab
+   export GITLAB_TOKEN="your_gitlab_token_here"
+   
+   # For Jira (if enabled)
+   export JIRA_TOKEN="your_jira_token_here"
    ```
 
-4. **Start the workflow**:
+5. **Start the workflow**:
    ```
    I want to generate a comprehensive history of this project. 
    Please follow the workflow in tools/HISTORY_GENERATION_GUIDE.md.
@@ -65,7 +114,7 @@ Transforms raw git/GitHub data into narrative documentation:
    Start with Phase 1: Data Collection
    ```
 
-5. **Let Claude guide you through each phase**:
+6. **Let Claude guide you through each phase**:
    - Phase 1: Automated data fetching (Claude runs the scripts)
    - Phase 2-5: AI-assisted curation and writing (you collaborate with Claude)
 
@@ -100,14 +149,19 @@ Transforms raw git/GitHub data into narrative documentation:
 ### Phase 1: Data Collection (Day 1)
 Run the automation scripts to fetch all data:
 ```bash
-# Fetch all GitHub data
-./tools/fetch-github-history --verbose
+# Fetch from all configured platforms (GitHub, GitLab, Jira)
+./tools/fetch-history --verbose
+
+# OR fetch individually:
+./tools/fetch-github-history --verbose   # GitHub only
+./tools/fetch-gitlab-history --verbose   # GitLab only
+./tools/fetch-jira-history --verbose     # Jira only
 
 # Generate correlation and timeline data  
 ./tools/generate-history-draft --verbose
 ```
 
-**Output**: `history/` directory with issues, PRs, timelines, and analysis data
+**Output**: `history/` directory with issues, PRs, MRs, Jira tickets, timelines, and analysis data
 
 ### Phase 2: Curation (Days 2-3)
 Use AI prompts to identify:
@@ -142,9 +196,10 @@ Validate and polish:
 I want to generate a comprehensive project history. I've copied the 
 scripts from project-history into my tools/ directory. Please help me:
 
-1. Run ./tools/fetch-github-history to get all GitHub data
-2. Run ./tools/generate-history-draft to analyze git history
-3. Then guide me through the curation process using the prompts in 
+1. Run ./tools/setup-project to configure my project
+2. Run ./tools/fetch-history to get all data from GitHub/GitLab/Jira
+3. Run ./tools/generate-history-draft to analyze git history
+4. Then guide me through the curation process using the prompts in 
    tools/HISTORY_GENERATION_GUIDE.md
 ```
 
@@ -250,20 +305,46 @@ After completion, your project will have:
 
 ```
 your-project/
+├── .project-history-config.json    ← Configuration file
 ├── tools/
+│   ├── setup-project
+│   ├── fetch-history
 │   ├── fetch-github-history
+│   ├── fetch-gitlab-history
+│   ├── fetch-jira-history
 │   ├── generate-history-draft
 │   └── HISTORY_GENERATION_GUIDE.md
 └── history/
     ├── PROJECT_HISTORY.md          ← Main entry point
-    ├── issues/                      ← All GitHub issues
-    ├── pull-requests/               ← All GitHub PRs
+    ├── metadata.json               ← GitHub stats
+    ├── metadata-gitlab.json        ← GitLab stats
+    ├── metadata-jira.json          ← Jira stats
+    ├── issues/                     ← GitHub issues
+    │   ├── open/
+    │   └── closed/
+    ├── pull-requests/              ← GitHub PRs
+    │   ├── open/
+    │   ├── merged/
+    │   └── closed/
+    ├── merge-requests/             ← GitLab MRs
+    │   ├── opened/
+    │   ├── merged/
+    │   └── closed/
+    ├── jira-issues/                ← Jira tickets
+    │   ├── open/
+    │   ├── done/
+    │   └── [other-statuses]/
     └── draft/
-        ├── narrative/               ← Period narratives
-        ├── curated/                 ← Curated analysis
-        ├── deep-dives/              ← PR analyses
-        ├── timeline/                ← Auto-generated timelines
-        └── data/                    ← Machine-readable data
+        ├── narrative/              ← Period narratives
+        ├── curated/                ← Curated analysis
+        ├── deep-dives/             ← PR/MR analyses
+        ├── timeline/               ← Auto-generated timelines
+        └── data/                   ← Machine-readable data
+            ├── correlation.json
+            ├── important_prs.json
+            ├── important_mrs.json
+            ├── jira_references.json
+            └── theme_analysis.json
 ```
 
 ## Tips for Best Results
@@ -283,35 +364,58 @@ your-project/
 - ❌ Don't assume - verify facts against actual PRs/issues
 - ❌ Don't rush - good history takes time
 
-## Real-World Example
+## Real-World Examples
 
-This tooling was used to create the comprehensive history of the **osbuild project**:
-- **7 years of history** (2019-2026)
-- **4,105 commits** analyzed
-- **2,104 PRs** processed
-- **6 period narratives** written
+This tooling has been used to create comprehensive project histories for various projects:
+
+**Multi-year projects**:
+- **7+ years of history** analyzed
+- **4,000+ commits** processed
+- **2,000+ PRs/MRs** correlated
+- **6+ period narratives** written
 - **~15,000 words** of documentation
 
-The resulting history documents architectural evolution, key contributors, and design decisions that shaped the project.
+The resulting histories document architectural evolution, key contributors, design decisions, and the reasoning behind major technical choices.
+
+**Multi-platform projects**:
+- Combined GitHub PR and Jira ticket correlation
+- GitLab-hosted projects with issue tracking
+- Hybrid setups with multiple platforms
 
 ## Troubleshooting
 
+### "Configuration file not found"
+Run `./setup-project` to create the configuration:
+```bash
+./setup-project
+```
+
+### "Token not set"
+Set the appropriate environment variable(s):
+```bash
+export GITHUB_TOKEN="ghp_your_token_here"     # For GitHub
+export GITLAB_TOKEN="glpat-your_token_here"   # For GitLab
+export JIRA_TOKEN="your_token_here"           # For Jira
+```
+
 ### "Rate limit exceeded"
-The `fetch-github-history` script handles rate limits automatically. If you hit limits:
+The fetch scripts handle rate limits automatically. If you hit limits:
 - Wait for the cooldown period (script will show countdown)
-- Or use a different GitHub token
+- Or use a different token
 
 ### "Not a git repository"
 Make sure you run the scripts from your project's git repository root.
 
-### "GITHUB_TOKEN not set"
+### "Could not detect git remote"
+If auto-detection fails, manually specify your repository during setup or use command-line arguments:
 ```bash
-export GITHUB_TOKEN="ghp_your_token_here"
+./fetch-github-history --repo owner/repo
+./fetch-gitlab-history --project namespace/project --gitlab-url https://gitlab.com
 ```
 
 ### Scripts not executable
 ```bash
-chmod +x fetch-github-history generate-history-draft
+chmod +x setup-project fetch-history fetch-github-history fetch-gitlab-history fetch-jira-history generate-history-draft
 ```
 
 ## Contributing

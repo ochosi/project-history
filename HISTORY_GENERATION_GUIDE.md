@@ -1,27 +1,31 @@
 # Project History Generation Guide
 
-This guide provides a complete workflow for generating comprehensive project histories from GitHub repositories using automated tools and AI-assisted narrative writing.
+This guide provides a complete workflow for generating comprehensive project histories from Git repositories using automated tools and AI-assisted narrative writing.
 
 ## Overview
 
 The history generation process combines:
-- **Automated data fetching** from GitHub (issues, PRs, metadata)
-- **Git analysis** to correlate commits with PRs and detect themes
+- **Automated data fetching** from GitHub/GitLab/Jira (issues, PRs, MRs, tickets, metadata)
+- **Git analysis** to correlate commits with PRs/MRs/tickets and detect themes
 - **AI-assisted synthesis** to write human-readable narratives
 
-**Time estimate**: 5-7 days for a multi-year project with 2,000+ PRs
+**Time estimate**: 5-7 days for a multi-year project with 2,000+ PRs/MRs
 
 ## Prerequisites
 
 ### Required Tools
 - Python 3.8+
 - Git
-- GitHub personal access token with `repo` scope
+- Authentication tokens for your platforms (see below)
 - AI assistant with file access (Claude, GPT-4, etc.)
 
 ### Required Scripts
-Both scripts are included in this directory:
-- `fetch-github-history` - Fetches all GitHub data as markdown
+All scripts are included in this directory:
+- `setup-project` - Interactive configuration wizard
+- `fetch-history` - Unified fetcher for all platforms
+- `fetch-github-history` - Fetches GitHub data as markdown
+- `fetch-gitlab-history` - Fetches GitLab data as markdown
+- `fetch-jira-history` - Fetches Jira data as markdown
 - `generate-history-draft` - Analyzes git history and creates timelines
 
 ### Setup
@@ -29,33 +33,47 @@ Both scripts are included in this directory:
 # Install Python dependencies
 pip install requests
 
-# Set your GitHub token
-export GITHUB_TOKEN="your_github_token_here"
+# Run interactive setup
+./setup-project
+
+# Set your authentication tokens (as prompted by setup-project)
+export GITHUB_TOKEN="your_github_token_here"    # If using GitHub
+export GITLAB_TOKEN="your_gitlab_token_here"    # If using GitLab
+export JIRA_TOKEN="your_jira_token_here"        # If using Jira
 
 # Make scripts executable
-chmod +x fetch-github-history generate-history-draft
+chmod +x setup-project fetch-history fetch-github-history fetch-gitlab-history fetch-jira-history generate-history-draft
 ```
 
 ## Workflow
 
 ### Phase 1: Data Collection (Day 1)
 
-#### Step 1: Fetch GitHub Data
+#### Step 1: Fetch Platform Data
 
 ```bash
 # From your repository root
-./tools/fetch-github-history --verbose
+# Fetch from all configured platforms
+./tools/fetch-history --verbose
+
+# OR fetch individually:
+./tools/fetch-github-history --verbose   # GitHub only
+./tools/fetch-gitlab-history --verbose   # GitLab only
+./tools/fetch-jira-history --verbose     # Jira only
 ```
 
 This creates:
-- `history/issues/` - All issues organized by state
-- `history/pull-requests/` - All PRs organized by state (open/closed/merged)
-- `history/metadata.json` - Summary statistics
+- `history/issues/` - GitHub issues organized by state
+- `history/pull-requests/` - GitHub PRs organized by state (open/closed/merged)
+- `history/merge-requests/` - GitLab MRs organized by state (opened/closed/merged)
+- `history/jira-issues/` - Jira tickets organized by status
+- `history/metadata*.json` - Summary statistics for each platform
 
 **Expected output**: 
 - Issues: ~100-500 for typical projects
-- PRs: ~500-5,000 for mature projects
-- Time: 5-30 minutes depending on size
+- PRs/MRs: ~500-5,000 for mature projects
+- Jira tickets: ~50-1,000 depending on usage
+- Time: 5-30 minutes depending on size and platforms
 
 #### Step 2: Generate Analysis Data
 
@@ -65,8 +83,10 @@ This creates:
 ```
 
 This creates:
-- `history/draft/data/correlation.json` - Commit→PR mappings
-- `history/draft/data/important_prs.json` - High-impact PRs (scored)
+- `history/draft/data/correlation.json` - Commit→PR/MR/Jira mappings
+- `history/draft/data/important_prs.json` - High-impact GitHub PRs (scored)
+- `history/draft/data/important_mrs.json` - High-impact GitLab MRs (scored)
+- `history/draft/data/jira_references.json` - Referenced Jira tickets
 - `history/draft/data/theme_analysis.json` - Categorized changes
 - `history/draft/timeline/*.md` - Timeline files by period
 
@@ -87,12 +107,15 @@ Now use your AI assistant to identify the most important changes. Here are prove
 
 ```
 I have generated history data for [PROJECT_NAME]. Please analyze the following files:
-- history/draft/data/important_prs.json
+- history/draft/data/important_prs.json (GitHub PRs)
+- history/draft/data/important_mrs.json (GitLab MRs, if available)
+- history/draft/data/jira_references.json (Jira tickets, if available)
 - history/draft/data/theme_analysis.json
 - history/draft/timeline/*.md
 
-Identify the top 20-30 most architecturally significant PRs. For each, note:
-1. PR number and title
+Identify the top 20-30 most architecturally significant changes (PRs, MRs, or major commits). 
+For each, note:
+1. Reference number (PR#, MR!, or Jira key) and title
 2. Why it's architecturally significant
 3. What changed in the codebase
 4. Any breaking changes or migrations
