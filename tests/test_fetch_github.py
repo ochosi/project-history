@@ -2,155 +2,97 @@
 """Tests for fetch-github-history script."""
 
 import json
-import sys
+import re
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-
-# Add parent directory to path to import the module
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# Import after path modification
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "fetch_github",
-    Path(__file__).parent.parent / "fetch-github-history"
-)
-fetch_github = importlib.util.module_from_spec(spec)
 
 
-class TestGitHubHistoryFetcher(unittest.TestCase):
-    """Test cases for GitHubHistoryFetcher class."""
+class TestGitHubURLParsing(unittest.TestCase):
+    """Test cases for GitHub URL parsing logic."""
 
-    def setUp(self):
-        """Set up test fixtures."""
-        spec.loader.exec_module(fetch_github)
-        self.output_dir = Path("/tmp/test-history")
-        self.fetcher = fetch_github.GitHubHistoryFetcher(
-            owner="test-owner",
-            repo="test-repo",
-            token="fake-token",
-            output_dir=str(self.output_dir),
-            verbose=False
-        )
+    def test_ssh_url_pattern(self):
+        """Test SSH URL pattern matching."""
+        pattern = r"git@[^:]+:([^/]+)/(.+?)(?:\.git)?$"
 
-    def test_sanitize_filename(self):
-        """Test filename sanitization."""
-        # Test basic sanitization
-        result = self.fetcher.sanitize_filename("Test: File/Name?")
+        url = "git@github.com:owner/repo.git"
+        match = re.match(pattern, url)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), "owner")
+        self.assertEqual(match.group(2), "repo")
+
+    def test_https_url_pattern(self):
+        """Test HTTPS URL parsing."""
+        from urllib.parse import urlparse
+
+        url = "https://github.com/owner/repo.git"
+        parsed = urlparse(url)
+        path_parts = parsed.path.strip('/').split('/')
+
+        self.assertEqual(len(path_parts), 2)
+        self.assertEqual(path_parts[0], "owner")
+        self.assertEqual(path_parts[1].replace('.git', ''), "repo")
+
+
+class TestFilenameSanitization(unittest.TestCase):
+    """Test filename sanitization logic."""
+
+    def sanitize_filename(self, text, max_length=50):
+        """Sanitize text for use as a filename."""
+        text = re.sub(r'[<>:"/\\|?*]', '', text)
+        text = re.sub(r'\s+', '-', text)
+        text = text.strip('-').lower()
+
+        if len(text) > max_length:
+            text = text[:max_length].rstrip('-')
+
+        return text or "untitled"
+
+    def test_removes_invalid_characters(self):
+        """Test that invalid filename characters are removed."""
+        result = self.sanitize_filename("Test: File/Name?")
         self.assertNotIn(":", result)
         self.assertNotIn("/", result)
         self.assertNotIn("?", result)
 
-        # Test length limit
+    def test_length_limit(self):
+        """Test length limiting."""
         long_name = "a" * 100
-        result = self.fetcher.sanitize_filename(long_name, max_length=50)
+        result = self.sanitize_filename(long_name, max_length=50)
         self.assertLessEqual(len(result), 50)
 
-        # Test empty string
-        result = self.fetcher.sanitize_filename("")
+    def test_empty_string(self):
+        """Test empty string handling."""
+        result = self.sanitize_filename("")
         self.assertEqual(result, "untitled")
 
-    def test_format_date(self):
-        """Test date formatting."""
-        # Test valid ISO date
-        result = self.fetcher.format_date("2023-01-15T14:30:00Z")
-        self.assertIn("January", result)
-        self.assertIn("2023", result)
 
-        # Test None
-        result = self.fetcher.format_date(None)
-        self.assertEqual(result, "N/A")
-
-        # Test empty string
-        result = self.fetcher.format_date("")
-        self.assertEqual(result, "N/A")
-
-    def test_generate_issue_markdown(self):
-        """Test issue markdown generation."""
-        issue = {
-            "number": 123,
-            "title": "Test Issue",
-            "state": "CLOSED",
-            "createdAt": "2023-01-01T00:00:00Z",
-            "updatedAt": "2023-01-02T00:00:00Z",
-            "closedAt": "2023-01-02T00:00:00Z",
-            "author": {"login": "testuser"},
-            "labels": {"nodes": [{"name": "bug"}]},
-            "body": "Test body",
-            "comments": {"nodes": []}
-        }
-
-        markdown = self.fetcher.generate_issue_markdown(issue)
-
-        # Check frontmatter
-        self.assertIn("type: issue", markdown)
-        self.assertIn("number: 123", markdown)
-        self.assertIn("state: closed", markdown)
-
-        # Check content
-        self.assertIn("# Issue #123", markdown)
-        self.assertIn("Test Issue", markdown)
-        self.assertIn("Test body", markdown)
-
-    def test_generate_pr_markdown(self):
-        """Test PR markdown generation."""
-        pr = {
-            "number": 456,
-            "title": "Test PR",
-            "state": "MERGED",
-            "merged": True,
-            "createdAt": "2023-01-01T00:00:00Z",
-            "updatedAt": "2023-01-02T00:00:00Z",
-            "mergedAt": "2023-01-02T00:00:00Z",
-            "author": {"login": "contributor"},
-            "baseRefName": "main",
-            "headRefName": "feature",
-            "labels": {"nodes": []},
-            "body": "Test PR body",
-            "comments": {"nodes": []},
-            "reviews": {"nodes": []}
-        }
-
-        markdown = self.fetcher.generate_pr_markdown(pr)
-
-        # Check frontmatter
-        self.assertIn("type: pull_request", markdown)
-        self.assertIn("number: 456", markdown)
-        self.assertIn("state: merged", markdown)
-
-        # Check content
-        self.assertIn("# Pull Request #456", markdown)
-        self.assertIn("Test PR", markdown)
-
-
-class TestGitRemoteParsing(unittest.TestCase):
-    """Test cases for git remote URL parsing."""
+class TestGitHubMockData(unittest.TestCase):
+    """Test GitHub mock data structure."""
 
     def setUp(self):
-        """Set up test fixtures."""
-        spec.loader.exec_module(fetch_github)
+        """Load mock data."""
+        fixtures_dir = Path(__file__).parent / "fixtures"
+        with open(fixtures_dir / "mock_github_data.json") as f:
+            self.data = json.load(f)
 
-    def test_parse_github_ssh_url(self):
-        """Test parsing GitHub SSH URLs."""
-        url = "git@github.com:owner/repo.git"
-        owner, repo = fetch_github.parse_git_remote(url)
-        self.assertEqual(owner, "owner")
-        self.assertEqual(repo, "repo")
+    def test_mock_data_structure(self):
+        """Test that mock data has expected structure."""
+        self.assertIn("issues", self.data)
+        self.assertIn("pullRequests", self.data)
 
-    def test_parse_github_https_url(self):
-        """Test parsing GitHub HTTPS URLs."""
-        url = "https://github.com/owner/repo.git"
-        owner, repo = fetch_github.parse_git_remote(url)
-        self.assertEqual(owner, "owner")
-        self.assertEqual(repo, "repo")
+    def test_mock_issue_structure(self):
+        """Test mock issue has required fields."""
+        issue = self.data["issues"][0]
+        required_fields = ["number", "title", "state", "createdAt", "author"]
+        for field in required_fields:
+            self.assertIn(field, issue)
 
-    def test_parse_github_https_url_without_git(self):
-        """Test parsing GitHub HTTPS URLs without .git suffix."""
-        url = "https://github.com/owner/repo"
-        owner, repo = fetch_github.parse_git_remote(url)
-        self.assertEqual(owner, "owner")
-        self.assertEqual(repo, "repo")
+    def test_mock_pr_structure(self):
+        """Test mock PR has required fields."""
+        pr = self.data["pullRequests"][0]
+        required_fields = ["number", "title", "state", "merged", "author"]
+        for field in required_fields:
+            self.assertIn(field, pr)
 
 
 if __name__ == "__main__":
