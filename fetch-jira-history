@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""
+Fetch Jira issues for the project and save as markdown files.
+
+This tool fetches all issues from a Jira project,
+including their comments, history, and metadata, and saves them as
+organized markdown files in the history/ directory.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+
+try:
+    import requests
+except ImportError:
+    print("Error: 'requests' library is required. Install with: pip install requests", file=sys.stderr)
+    sys.exit(1)
+
+
+class JiraHistoryFetcher:
+    """Fetches and saves Jira issues as markdown files."""
+
+    MAX_RETRIES = 3
+    RETRY_DELAY = 5
+    MAX_RESULTS = 100  # Jira API max per page
+
+    def __init__(self, jira_url: str, project_key: str, token: str, output_dir: str, verbose: bool = False):
+        """
+        Initialize the fetcher.
+
+        Args:
+            jira_url: Jira instance URL (e.g., 'https://jira.atlassian.com')
+            project_key: Jira project key (e.g., 'PROJ')
+            token: Jira API token or Personal Access Token
+            output_dir: Directory to save markdown files
+            verbose: Enable verbose logging
+        """
+        self.jira_url = jira_url.rstrip('/')
+        self.project_key = project_key.upper()
+        self.token = token
+        self.output_dir = Path(output_dir)
+        self.verbose = verbose
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        })
+        self.stats = {
+            "issues_fetched": 0,
+            "api_calls": 0,
+        }
+
+    def log(self, message: str, force: bool = False):
+        """Log a message if verbose mode is enabled."""
+        if self.verbose or force:
+            print(message)
+
+    def api_request(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Make an API request to Jira.
+
+        Args:
+            endpoint: API endpoint (e.g., 'search')
+            params: Query parameters
+
+        Returns:
+            Response JSON
+        """
+        url = f"{self.jira_url}/rest/api/3/{endpoint}"
+        self.stats["api_calls"] += 1
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                return response.json()
+
+            except requests.exceptions.RequestException as e:
+                if attempt < self.MAX_RETRIES - 1:
+                    wait = self.RETRY_DELAY * (2 ** attempt)
+                    self.log(f"Request failed: {e}. Retrying in {wait}s...", force=True)
+                    time.sleep(wait)
+                else:
+                    raise
+
+    def sanitize_filename(self, text: str, max_length: int = 50) -> str:
+        """
+        Sanitize text for use as a filename.
+
+        Args:
+            text: Text to sanitize
+            max_length: Maximum length of filename
+
+        Returns:
+            Sanitized filename
+        """
+        # Remove or replace invalid characters
+        text = re.sub(r'[<>:"/\\|?*]', '', text)
+        text = re.sub(r'\s+', '-', text)
+        text = text.strip('-').lower()
+
+        # Truncate if too long
+        if len(text) > max_length:
+            text = text[:max_length].rstrip('-')
+
+        return text or "untitled"
+
+    def get_filename(self, key: str, summary: str, existing_files: set) -> str:
+        """
+        Generate a unique filename for an issue.
+
+        Args:
+            key: Issue key (e.g., 'PROJ-123')
+            summary: Issue summary/title
+            existing_files: Set of existing filenames to avoid conflicts
+
+        Returns:
+            Unique filename
+        """
+        sanitized_summary = self.sanitize_filename(summary)
+        filename = f"{key}-{sanitized_summary}.md"
+
+        # Handle conflicts by appending hash
+        if filename in existing_files:
+            hash_suffix = hashlib.md5(f"{key}{summary}".encode()).hexdigest()[:8]
+            filename = f"{key}-{sanitized_summary}-{hash_suffix}.md"
+
+        existing_files.add(filename)
+        return filename
+
+    def format_date(self, date_str: Optional[str]) -> str:
+        """Format ISO date string to human-readable format."""
+        if not date_str:
+            return "N/A"
+        try:
+            # Jira uses different datetime formats
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        except (ValueError, AttributeError):
+            return date_str or "N/A"
+
+    def fetch_issue_comments(self, issue_key: str) -> List[Dict[str, Any]]:
+        """Fetch comments for an issue."""
+        try:
+            data = self.api_request(f"issue/{issue_key}/comment")
+            return data.get("comments", [])
+        except Exception as e:
+            self.log(f"Warning: Could not fetch comments for {issue_key}: {e}")
+            return []
+
+    def generate_issue_markdown(self, issue: Dict[str, Any], comments: List[Dict[str, Any]]) -> str:
+        """
+        Generate markdown content for a Jira issue.
+
+        Args:
+            issue: Issue data from Jira API
+            comments: Comments on the issue
+
+        Returns:
+            Markdown content
+        """
+        fields = issue.get("fields", {})
+        key = issue.get("key", "UNKNOWN")
+
+        # Extract basic fields
+        summary = fields.get("summary", "No summary")
+        description = fields.get("description", "")
+        status = fields.get("status", {}).get("name", "Unknown")
+        issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+        priority = fields.get("priority", {}).get("name", "None")
+
+        # Extract dates
+        created = fields.get("created")
+        updated = fields.get("updated")
+        resolved = fields.get("resolutiondate")
+
+        # Extract people
+        reporter = fields.get("reporter", {})
+        reporter_name = reporter.get("displayName", "[deleted]") if reporter else "[deleted]"
+
+        assignee = fields.get("assignee", {})
+        assignee_name = assignee.get("displayName", "Unassigned") if assignee else "Unassigned"
+
+        # Extract labels and components
+        labels = fields.get("labels", [])
+        labels_str = ", ".join(f"`{label}`" for label in labels) if labels else "None"
+
+        components = fields.get("components", [])
+        components_str = ", ".join(c.get("name", "") for c in components) if components else "None"
+
+        # URL
+        url = f"{self.jira_url}/browse/{key}"
+
+        # Format description (handle Jira's document format)
+        description_text = self._format_description(description)
+
+        markdown = f"""---
+type: jira_issue
+key: {key}
+summary: {json.dumps(summary)}
+status: {status}
+issue_type: {issue_type}
+priority: {priority}
+reporter: {reporter_name}
+assignee: {assignee_name}
+created: {created}
+updated: {updated}
+"""
+
+        if resolved:
+            markdown += f"resolved: {resolved}\n"
+
+        markdown += f"""labels: {json.dumps(labels)}
+components: {json.dumps([c.get("name") for c in components])}
+url: {url}
+---
+
+# {key}: {summary}
+
+**Type**: {issue_type}
+**Status**: {status}
+**Priority**: {priority}
+**Reporter**: {reporter_name}
+**Assignee**: {assignee_name}
+**Created**: {self.format_date(created)}
+**Updated**: {self.format_date(updated)}
+**Labels**: {labels_str}
+**Components**: {components_str}
+
+## Description
+
+{description_text}
+
+"""
+
+        # Add comments
+        if comments:
+            markdown += "---\n\n## Comments\n\n"
+            for comment in comments:
+                author = comment.get("author", {})
+                author_name = author.get("displayName", "[deleted]") if author else "[deleted]"
+                created_date = comment.get("created", "")
+                body = self._format_description(comment.get("body", ""))
+
+                markdown += f"### Comment by {author_name} on {self.format_date(created_date)}\n\n"
+                markdown += f"{body}\n\n"
+
+        markdown += f"---\n\n*Archived from: {url}*\n"
+
+        return markdown
+
+    def _format_description(self, desc: Any) -> str:
+        """
+        Format Jira description field (can be string or Atlassian Document Format).
+
+        Args:
+            desc: Description field from Jira
+
+        Returns:
+            Formatted markdown text
+        """
+        if not desc:
+            return "*No description provided*"
+
+        # If it's already a string, return it
+        if isinstance(desc, str):
+            return desc
+
+        # If it's Atlassian Document Format (ADF), convert to text
+        if isinstance(desc, dict) and desc.get("type") == "doc":
+            return self._adf_to_markdown(desc)
+
+        # Fallback: convert to JSON representation
+        return f"```json\n{json.dumps(desc, indent=2)}\n```"
+
+    def _adf_to_markdown(self, doc: Dict[str, Any]) -> str:
+        """
+        Convert Atlassian Document Format to markdown (simplified).
+
+        Args:
+            doc: ADF document structure
+
+        Returns:
+            Markdown text
+        """
+        lines = []
+        content = doc.get("content", [])
+
+        for node in content:
+            node_type = node.get("type")
+
+            if node_type == "paragraph":
+                paragraph_text = self._extract_text_from_node(node)
+                if paragraph_text:
+                    lines.append(paragraph_text)
+                lines.append("")  # Empty line after paragraph
+
+            elif node_type == "heading":
+                level = node.get("attrs", {}).get("level", 1)
+                heading_text = self._extract_text_from_node(node)
+                lines.append(f"{'#' * level} {heading_text}")
+                lines.append("")
+
+            elif node_type == "bulletList" or node_type == "orderedList":
+                list_items = self._extract_list_items(node)
+                lines.extend(list_items)
+                lines.append("")
+
+            elif node_type == "codeBlock":
+                code_text = self._extract_text_from_node(node)
+                language = node.get("attrs", {}).get("language", "")
+                lines.append(f"```{language}")
+                lines.append(code_text)
+                lines.append("```")
+                lines.append("")
+
+        return "\n".join(lines).strip() or "*No description provided*"
+
+    def _extract_text_from_node(self, node: Dict[str, Any]) -> str:
+        """Extract text content from an ADF node."""
+        texts = []
+        content = node.get("content", [])
+
+        for item in content:
+            if item.get("type") == "text":
+                text = item.get("text", "")
+                # Handle marks (bold, italic, etc.)
+                marks = item.get("marks", [])
+                for mark in marks:
+                    mark_type = mark.get("type")
+                    if mark_type == "strong":
+                        text = f"**{text}**"
+                    elif mark_type == "em":
+                        text = f"*{text}*"
+                    elif mark_type == "code":
+                        text = f"`{text}`"
+                texts.append(text)
+            elif item.get("type") == "hardBreak":
+                texts.append("\n")
+            else:
+                # Recursively extract from nested nodes
+                texts.append(self._extract_text_from_node(item))
+
+        return "".join(texts)
+
+    def _extract_list_items(self, list_node: Dict[str, Any]) -> List[str]:
+        """Extract list items from an ADF list node."""
+        items = []
+        content = list_node.get("content", [])
+        is_ordered = list_node.get("type") == "orderedList"
+
+        for idx, item in enumerate(content):
+            if item.get("type") == "listItem":
+                item_text = self._extract_text_from_node(item)
+                prefix = f"{idx + 1}." if is_ordered else "-"
+                items.append(f"{prefix} {item_text}")
+
+        return items
+
+    def fetch_issues(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch all issues for the project.
+
+        Args:
+            status_filter: Filter by status (e.g., 'Open', 'Closed', 'Done')
+
+        Returns:
+            List of issue data
+        """
+        self.log(f"Fetching issues for project {self.project_key}...", force=True)
+
+        # Build JQL query
+        jql = f"project = {self.project_key}"
+        if status_filter:
+            jql += f" AND status = '{status_filter}'"
+
+        jql += " ORDER BY created ASC"
+
+        issues = []
+        start_at = 0
+
+        while True:
+            params = {
+                "jql": jql,
+                "startAt": start_at,
+                "maxResults": self.MAX_RESULTS,
+                "fields": "*all",
+            }
+
+            self.log(f"Fetching issues starting at {start_at}...")
+            data = self.api_request("search", params)
+
+            page_issues = data.get("issues", [])
+            issues.extend(page_issues)
+
+            total = data.get("total", 0)
+            start_at += len(page_issues)
+
+            self.log(f"Fetched {len(issues)}/{total} issues")
+
+            # Check if we've fetched all issues
+            if start_at >= total:
+                break
+
+        self.log(f"Fetched {len(issues)} total issues", force=True)
+        return issues
+
+    def save_issues(self, issues: List[Dict[str, Any]]):
+        """Save issues as markdown files."""
+        existing_files = set()
+
+        for issue in issues:
+            fields = issue.get("fields", {})
+            status = fields.get("status", {}).get("name", "unknown")
+            key = issue.get("key", "UNKNOWN")
+            summary = fields.get("summary", "No summary")
+
+            # Normalize status for directory
+            status_dir_name = re.sub(r'\s+', '-', status.lower())
+            state_dir = self.output_dir / "jira-issues" / status_dir_name
+
+            filename = self.get_filename(key, summary, existing_files)
+            filepath = state_dir / filename
+
+            # Fetch comments for this issue
+            comments = self.fetch_issue_comments(key)
+
+            markdown = self.generate_issue_markdown(issue, comments)
+            self.save_markdown(filepath, markdown)
+
+            self.stats["issues_fetched"] += 1
+            self.log(f"Saved issue {key}: {filepath}")
+
+    def save_markdown(self, filepath: Path, content: str):
+        """Save markdown content to file."""
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    def generate_metadata(self, issues: List[Dict[str, Any]]):
+        """Generate metadata.json with summary information."""
+        # Count by status
+        status_counts = {}
+        for issue in issues:
+            status = issue.get("fields", {}).get("status", {}).get("name", "Unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        metadata = {
+            "project_key": self.project_key,
+            "jira_url": self.jira_url,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+            "stats": {
+                "total_issues": len(issues),
+                "by_status": status_counts,
+                "api_calls_made": self.stats["api_calls"],
+            }
+        }
+
+        metadata_path = self.output_dir / "metadata-jira.json"
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
+
+        self.log(f"Generated metadata: {metadata_path}", force=True)
+
+    def run(self, status_filter: Optional[str] = None):
+        """
+        Run the fetcher.
+
+        Args:
+            status_filter: Optional status filter
+        """
+        self.log(f"Fetching from Jira project: {self.project_key}", force=True)
+        self.log(f"Jira URL: {self.jira_url}", force=True)
+        self.log(f"Output directory: {self.output_dir}", force=True)
+
+        issues = self.fetch_issues(status_filter)
+        self.save_issues(issues)
+        self.generate_metadata(issues)
+
+        self.log(f"\nCompleted! Stats:", force=True)
+        self.log(f"  Issues saved: {self.stats['issues_fetched']}", force=True)
+        self.log(f"  API calls made: {self.stats['api_calls']}", force=True)
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Fetch Jira issues as markdown files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --project PROJ
+  %(prog)s --project PROJ --status Done
+  %(prog)s --project PROJ --jira-url https://mycompany.atlassian.net
+  %(prog)s --dry-run
+
+Environment variables:
+  JIRA_TOKEN       Jira API token or Personal Access Token (required)
+  JIRA_URL         Jira instance URL (required if not specified via --jira-url)
+  JIRA_PROJECT     Jira project key (can be overridden by --project)
+        """
+    )
+
+    parser.add_argument(
+        "--output",
+        default="./history",
+        help="Output directory (default: ./history)"
+    )
+    parser.add_argument(
+        "--project",
+        help="Jira project key (e.g., 'PROJ'). Can also use JIRA_PROJECT env var."
+    )
+    parser.add_argument(
+        "--jira-url",
+        help="Jira instance URL (e.g., 'https://mycompany.atlassian.net'). Can also use JIRA_URL env var."
+    )
+    parser.add_argument(
+        "--token",
+        help="Jira API token. Uses JIRA_TOKEN env var if not specified."
+    )
+    parser.add_argument(
+        "--status",
+        help="Filter by status (e.g., 'Open', 'Closed', 'Done')"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be fetched without creating files"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+    )
+
+    args = parser.parse_args()
+
+    # Get token
+    token = args.token or os.getenv("JIRA_TOKEN")
+    if not token:
+        print("Error: Jira token required. Set JIRA_TOKEN environment variable or use --token", file=sys.stderr)
+        sys.exit(1)
+
+    # Get Jira URL
+    jira_url = args.jira_url or os.getenv("JIRA_URL")
+    if not jira_url:
+        print("Error: Jira URL required. Set JIRA_URL environment variable or use --jira-url", file=sys.stderr)
+        sys.exit(1)
+
+    # Get project key
+    project_key = args.project or os.getenv("JIRA_PROJECT")
+    if not project_key:
+        print("Error: Jira project key required. Set JIRA_PROJECT environment variable or use --project", file=sys.stderr)
+        sys.exit(1)
+
+    if args.dry_run:
+        print(f"Dry run mode - would fetch from Jira project {project_key}")
+        print(f"  Jira URL: {jira_url}")
+        print(f"  Output directory: {args.output}")
+        print(f"  Status filter: {args.status or 'all'}")
+        sys.exit(0)
+
+    # Run fetcher
+    try:
+        fetcher = JiraHistoryFetcher(
+            jira_url=jira_url,
+            project_key=project_key,
+            token=token,
+            output_dir=args.output,
+            verbose=args.verbose
+        )
+        fetcher.run(status_filter=args.status)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
