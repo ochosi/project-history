@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""
+Interactive setup for project history generation.
+
+This script configures the project for history generation by asking
+about Git hosting platform (GitHub/GitLab) and optional Jira integration.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
+
+
+def print_header(text: str):
+    """Print a formatted header."""
+    print(f"\n{'=' * 70}")
+    print(f"  {text}")
+    print(f"{'=' * 70}\n")
+
+
+def print_info(text: str):
+    """Print an info message."""
+    print(f"ℹ️  {text}")
+
+
+def print_success(text: str):
+    """Print a success message."""
+    print(f"✓ {text}")
+
+
+def print_error(text: str):
+    """Print an error message."""
+    print(f"✗ {text}", file=sys.stderr)
+
+
+def get_input(prompt: str, default: Optional[str] = None) -> str:
+    """Get user input with optional default value."""
+    if default:
+        response = input(f"{prompt} [{default}]: ").strip()
+        return response if response else default
+    else:
+        while True:
+            response = input(f"{prompt}: ").strip()
+            if response:
+                return response
+            print("  This field is required. Please enter a value.")
+
+
+def get_yes_no(prompt: str, default: bool = False) -> bool:
+    """Get yes/no input from user."""
+    default_str = "Y/n" if default else "y/N"
+    while True:
+        response = input(f"{prompt} [{default_str}]: ").strip().lower()
+        if not response:
+            return default
+        if response in ['y', 'yes']:
+            return True
+        if response in ['n', 'no']:
+            return False
+        print("  Please enter 'y' or 'n'")
+
+
+def detect_git_remote() -> Optional[Tuple[str, str, str]]:
+    """
+    Detect Git hosting platform from remote URL.
+
+    Returns:
+        Tuple of (platform, url, project_path) or None
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=os.getcwd()
+        )
+        remote_url = result.stdout.strip()
+
+        # Detect GitHub
+        if 'github.com' in remote_url:
+            owner, repo = parse_github_remote(remote_url)
+            return ('github', 'https://github.com', f"{owner}/{repo}")
+
+        # Detect GitLab
+        if 'gitlab' in remote_url:
+            gitlab_url, project_path = parse_gitlab_remote(remote_url)
+            return ('gitlab', gitlab_url, project_path)
+
+        return None
+
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def parse_github_remote(remote_url: str) -> Tuple[str, str]:
+    """Parse GitHub remote URL to extract owner and repo."""
+    # SSH: git@github.com:owner/repo.git
+    if remote_url.startswith("git@"):
+        match = re.match(r"git@[^:]+:([^/]+)/(.+?)(?:\.git)?$", remote_url)
+        if match:
+            return match.group(1), match.group(2)
+
+    # HTTPS: https://github.com/owner/repo.git
+    parsed = urlparse(remote_url)
+    path_parts = parsed.path.strip('/').split('/')
+    if len(path_parts) >= 2:
+        owner = path_parts[0]
+        repo = path_parts[1].replace('.git', '')
+        return owner, repo
+
+    raise ValueError(f"Could not parse GitHub URL: {remote_url}")
+
+
+def parse_gitlab_remote(remote_url: str) -> Tuple[str, str]:
+    """Parse GitLab remote URL to extract URL and project path."""
+    # SSH: git@gitlab.com:namespace/project.git
+    if remote_url.startswith("git@"):
+        match = re.match(r"git@([^:]+):(.+?)(?:\.git)?$", remote_url)
+        if match:
+            host = match.group(1)
+            project_path = match.group(2)
+            gitlab_url = f"https://{host}"
+            return gitlab_url, project_path
+
+    # HTTPS: https://gitlab.com/namespace/project.git
+    parsed = urlparse(remote_url)
+    gitlab_url = f"{parsed.scheme}://{parsed.netloc}"
+    project_path = parsed.path.strip('/').replace('.git', '')
+    return gitlab_url, project_path
+
+
+def configure_github() -> Dict:
+    """Configure GitHub settings."""
+    print_header("GitHub Configuration")
+
+    detected = detect_git_remote()
+    if detected and detected[0] == 'github':
+        print_info(f"Detected GitHub repository: {detected[2]}")
+        use_detected = get_yes_no("Use detected repository?", default=True)
+
+        if use_detected:
+            owner, repo = detected[2].split('/')
+            return {
+                'enabled': True,
+                'owner': owner,
+                'repo': repo
+            }
+
+    print_info("Enter GitHub repository details (owner/repo format)")
+    repo_full = get_input("Repository (e.g., 'octocat/Hello-World')")
+
+    try:
+        owner, repo = repo_full.split('/', 1)
+        return {
+            'enabled': True,
+            'owner': owner.strip(),
+            'repo': repo.strip()
+        }
+    except ValueError:
+        print_error("Invalid format. Expected 'owner/repo'")
+        sys.exit(1)
+
+
+def configure_gitlab() -> Dict:
+    """Configure GitLab settings."""
+    print_header("GitLab Configuration")
+
+    detected = detect_git_remote()
+    if detected and detected[0] == 'gitlab':
+        print_info(f"Detected GitLab repository: {detected[2]}")
+        print_info(f"GitLab URL: {detected[1]}")
+        use_detected = get_yes_no("Use detected repository?", default=True)
+
+        if use_detected:
+            return {
+                'enabled': True,
+                'project_id': detected[2],
+                'url': detected[1]
+            }
+
+    print_info("Enter GitLab instance and project details")
+    gitlab_url = get_input("GitLab URL (e.g., 'https://gitlab.com')", default="https://gitlab.com")
+    project_id = get_input("Project path (e.g., 'namespace/project')")
+
+    return {
+        'enabled': True,
+        'project_id': project_id.strip(),
+        'url': gitlab_url.strip().rstrip('/')
+    }
+
+
+def configure_jira() -> Dict:
+    """Configure Jira settings."""
+    print_header("Jira Configuration")
+
+    print_info("Jira integration is optional but recommended for complete history")
+    enable_jira = get_yes_no("Enable Jira integration?", default=False)
+
+    if not enable_jira:
+        return {'enabled': False}
+
+    jira_url = get_input("Jira URL (e.g., 'https://mycompany.atlassian.net')")
+    project_key = get_input("Jira project key (e.g., 'PROJ')")
+
+    return {
+        'enabled': True,
+        'url': jira_url.strip().rstrip('/'),
+        'project_key': project_key.strip().upper()
+    }
+
+
+def check_environment_variables(config: Dict) -> bool:
+    """Check if required environment variables are set."""
+    print_header("Environment Variables Check")
+
+    all_set = True
+    recommendations = []
+
+    if config['platforms']['github']['enabled']:
+        if not os.getenv('GITHUB_TOKEN'):
+            print_error("GITHUB_TOKEN not set")
+            recommendations.append("export GITHUB_TOKEN='ghp_...'  # Create at https://github.com/settings/tokens")
+            all_set = False
+        else:
+            print_success("GITHUB_TOKEN is set")
+
+    if config['platforms']['gitlab']['enabled']:
+        if not os.getenv('GITLAB_TOKEN'):
+            print_error("GITLAB_TOKEN not set")
+            recommendations.append("export GITLAB_TOKEN='glpat-...'  # Create in GitLab Settings → Access Tokens")
+            all_set = False
+        else:
+            print_success("GITLAB_TOKEN is set")
+
+    if config['platforms']['jira']['enabled']:
+        if not os.getenv('JIRA_TOKEN'):
+            print_error("JIRA_TOKEN not set")
+            recommendations.append("export JIRA_TOKEN='...'  # Create in Jira Account Settings → Security → API Tokens")
+            all_set = False
+        else:
+            print_success("JIRA_TOKEN is set")
+
+    if not all_set:
+        print("\n📝 To set environment variables, run:\n")
+        for rec in recommendations:
+            print(f"  {rec}")
+        print("\n⚠️  These tokens are required before fetching history data.")
+
+    return all_set
+
+
+def save_config(config: Dict, config_file: Path):
+    """Save configuration to file."""
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+    print_success(f"Configuration saved to {config_file}")
+
+
+def display_next_steps(config: Dict):
+    """Display next steps for the user."""
+    print_header("Next Steps")
+
+    print("1. Set environment variables for authentication (if not already set)")
+    print()
+
+    if config['platforms']['github']['enabled']:
+        print("   GitHub:")
+        print("     export GITHUB_TOKEN='your_token_here'")
+        print("     Get token at: https://github.com/settings/tokens (needs 'repo' scope)")
+        print()
+
+    if config['platforms']['gitlab']['enabled']:
+        print("   GitLab:")
+        print("     export GITLAB_TOKEN='your_token_here'")
+        print("     Get token in GitLab Settings → Access Tokens (needs 'read_api' scope)")
+        print()
+
+    if config['platforms']['jira']['enabled']:
+        print("   Jira:")
+        print("     export JIRA_TOKEN='your_token_here'")
+        jira_url = config['platforms']['jira']['url']
+        print(f"     Get token at: {jira_url}/secure/ViewProfile.jspa (API Tokens)")
+        print()
+
+    print("2. Fetch history data:")
+    print("     ./fetch-history")
+    print()
+
+    print("3. Generate timeline and analysis:")
+    print("     ./generate-history-draft")
+    print()
+
+    print("4. Follow the AI-assisted curation workflow:")
+    print("     See HISTORY_GENERATION_GUIDE.md for detailed prompts")
+    print()
+
+
+def main():
+    """Main entry point."""
+    print_header("Project History Generator - Setup")
+
+    print("This wizard will configure project history generation for your repository.")
+    print("You'll be asked about Git hosting (GitHub/GitLab) and optional Jira integration.")
+    print()
+
+    config_file = Path(".project-history-config.json")
+
+    # Check if config already exists
+    if config_file.exists():
+        print_info(f"Configuration file already exists: {config_file}")
+        overwrite = get_yes_no("Overwrite existing configuration?", default=False)
+        if not overwrite:
+            print("Setup cancelled.")
+            sys.exit(0)
+
+    # Detect Git remote
+    detected = detect_git_remote()
+    if detected:
+        platform, url, project = detected
+        print_info(f"Detected {platform.title()} repository from git remote")
+
+    # Ask which platforms to configure
+    print_header("Platform Selection")
+    print("Which platforms does your project use?")
+    print()
+
+    use_github = get_yes_no("GitHub?", default=(detected and detected[0] == 'github'))
+    use_gitlab = get_yes_no("GitLab?", default=(detected and detected[0] == 'gitlab'))
+
+    if not use_github and not use_gitlab:
+        print_error("At least one Git platform (GitHub or GitLab) must be enabled")
+        sys.exit(1)
+
+    # Configure platforms
+    config = {
+        'platforms': {
+            'github': {'enabled': False},
+            'gitlab': {'enabled': False},
+            'jira': {'enabled': False}
+        },
+        'output_dir': './history'
+    }
+
+    if use_github:
+        config['platforms']['github'] = configure_github()
+
+    if use_gitlab:
+        config['platforms']['gitlab'] = configure_gitlab()
+
+    # Always ask about Jira
+    config['platforms']['jira'] = configure_jira()
+
+    # Output directory
+    print_header("Output Directory")
+    output_dir = get_input("Where should history files be saved?", default="./history")
+    config['output_dir'] = output_dir
+
+    # Save configuration
+    save_config(config, config_file)
+
+    # Check environment variables
+    check_environment_variables(config)
+
+    # Display next steps
+    display_next_steps(config)
+
+    print_success("Setup complete!")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nSetup cancelled by user")
+        sys.exit(130)
+    except Exception as e:
+        print_error(f"Setup failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

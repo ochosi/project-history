@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""
+Unified history fetcher for multi-platform projects.
+
+This script reads .project-history-config.json and fetches data from
+all configured platforms (GitHub, GitLab, Jira).
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List
+
+
+class Color:
+    """ANSI color codes."""
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    END = '\033[0m'
+    BOLD = '\033[1m'
+
+
+def print_header(text: str):
+    """Print a formatted header."""
+    print(f"\n{Color.BOLD}{Color.HEADER}{'=' * 70}")
+    print(f"  {text}")
+    print(f"{'=' * 70}{Color.END}\n")
+
+
+def print_info(text: str):
+    """Print an info message."""
+    print(f"{Color.CYAN}ℹ️  {text}{Color.END}")
+
+
+def print_success(text: str):
+    """Print a success message."""
+    print(f"{Color.GREEN}✓ {text}{Color.END}")
+
+
+def print_warning(text: str):
+    """Print a warning message."""
+    print(f"{Color.YELLOW}⚠️  {text}{Color.END}")
+
+
+def print_error(text: str):
+    """Print an error message."""
+    print(f"{Color.RED}✗ {text}{Color.END}", file=sys.stderr)
+
+
+def load_config(config_file: Path) -> Dict:
+    """Load project configuration."""
+    if not config_file.exists():
+        print_error(f"Configuration file not found: {config_file}")
+        print_info("Run './setup-project' to create configuration")
+        sys.exit(1)
+
+    with open(config_file, 'r') as f:
+        return json.load(f)
+
+
+def check_environment_variable(var_name: str) -> bool:
+    """Check if an environment variable is set."""
+    value = os.getenv(var_name)
+    if value:
+        print_success(f"{var_name} is set")
+        return True
+    else:
+        print_error(f"{var_name} is not set")
+        return False
+
+
+def run_command(cmd: List[str], description: str, verbose: bool = False) -> bool:
+    """
+    Run a command and return success status.
+
+    Args:
+        cmd: Command to run
+        description: Description for logging
+        verbose: Pass verbose flag to subprocess
+
+    Returns:
+        True if successful, False otherwise
+    """
+    print_info(f"Running: {description}")
+
+    # Add verbose flag if requested
+    if verbose and '--verbose' not in cmd:
+        cmd.append('--verbose')
+
+    try:
+        result = subprocess.run(cmd, check=True)
+        print_success(f"Completed: {description}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed: {description} (exit code {e.returncode})")
+        return False
+    except FileNotFoundError:
+        print_error(f"Command not found: {cmd[0]}")
+        print_info(f"Make sure the script exists and is executable: chmod +x {cmd[0]}")
+        return False
+
+
+def fetch_github(config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
+    """Fetch GitHub data."""
+    print_header("Fetching GitHub Data")
+
+    github_config = config['platforms']['github']
+    repo = f"{github_config['owner']}/{github_config['repo']}"
+
+    if not check_environment_variable('GITHUB_TOKEN'):
+        return False
+
+    cmd = [
+        './fetch-github-history',
+        '--repo', repo,
+        '--output', output_dir,
+        '--state', state_filter
+    ]
+
+    return run_command(cmd, f"GitHub: {repo}", verbose)
+
+
+def fetch_gitlab(config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
+    """Fetch GitLab data."""
+    print_header("Fetching GitLab Data")
+
+    gitlab_config = config['platforms']['gitlab']
+    project_id = gitlab_config['project_id']
+    gitlab_url = gitlab_config['url']
+
+    if not check_environment_variable('GITLAB_TOKEN'):
+        return False
+
+    cmd = [
+        './fetch-gitlab-history',
+        '--project', project_id,
+        '--gitlab-url', gitlab_url,
+        '--output', output_dir,
+        '--state', state_filter
+    ]
+
+    return run_command(cmd, f"GitLab: {project_id}", verbose)
+
+
+def fetch_jira(config: Dict, output_dir: str, verbose: bool, status_filter: str = None) -> bool:
+    """Fetch Jira data."""
+    print_header("Fetching Jira Data")
+
+    jira_config = config['platforms']['jira']
+    project_key = jira_config['project_key']
+    jira_url = jira_config['url']
+
+    if not check_environment_variable('JIRA_TOKEN'):
+        return False
+
+    # Set environment variables for the Jira script
+    env = os.environ.copy()
+    env['JIRA_URL'] = jira_url
+    env['JIRA_PROJECT'] = project_key
+
+    cmd = [
+        './fetch-jira-history',
+        '--project', project_key,
+        '--jira-url', jira_url,
+        '--output', output_dir,
+    ]
+
+    if status_filter:
+        cmd.extend(['--status', status_filter])
+
+    print_info(f"Running: Jira: {project_key}")
+
+    if verbose:
+        cmd.append('--verbose')
+
+    try:
+        result = subprocess.run(cmd, check=True, env=env)
+        print_success(f"Completed: Jira: {project_key}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed: Jira: {project_key} (exit code {e.returncode})")
+        return False
+    except FileNotFoundError:
+        print_error(f"Command not found: {cmd[0]}")
+        return False
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Fetch history from all configured platforms",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+This script reads .project-history-config.json and fetches data from
+all enabled platforms (GitHub, GitLab, Jira).
+
+Before running, ensure environment variables are set:
+  GITHUB_TOKEN - for GitHub (if enabled)
+  GITLAB_TOKEN - for GitLab (if enabled)
+  JIRA_TOKEN   - for Jira (if enabled)
+
+Run './setup-project' if configuration doesn't exist.
+        """
+    )
+
+    parser.add_argument(
+        '--config',
+        default='.project-history-config.json',
+        help='Configuration file (default: .project-history-config.json)'
+    )
+    parser.add_argument(
+        '--only-github',
+        action='store_true',
+        help='Fetch only from GitHub'
+    )
+    parser.add_argument(
+        '--only-gitlab',
+        action='store_true',
+        help='Fetch only from GitLab'
+    )
+    parser.add_argument(
+        '--only-jira',
+        action='store_true',
+        help='Fetch only from Jira'
+    )
+    parser.add_argument(
+        '--state',
+        choices=['all', 'open', 'closed', 'merged'],
+        default='all',
+        help='Filter by state for GitHub/GitLab (default: all)'
+    )
+    parser.add_argument(
+        '--jira-status',
+        help='Filter Jira issues by status (e.g., "Done", "In Progress")'
+    )
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose output'
+    )
+
+    args = parser.parse_args()
+
+    # Load configuration
+    config_file = Path(args.config)
+    config = load_config(config_file)
+
+    output_dir = config.get('output_dir', './history')
+    platforms = config.get('platforms', {})
+
+    # Determine which platforms to fetch from
+    fetch_from_github = (not args.only_gitlab and not args.only_jira) and platforms.get('github', {}).get('enabled', False)
+    fetch_from_gitlab = (not args.only_github and not args.only_jira) and platforms.get('gitlab', {}).get('enabled', False)
+    fetch_from_jira = (not args.only_github and not args.only_gitlab) and platforms.get('jira', {}).get('enabled', False)
+
+    # Override if specific platform is requested
+    if args.only_github:
+        fetch_from_github = platforms.get('github', {}).get('enabled', False)
+        fetch_from_gitlab = False
+        fetch_from_jira = False
+    elif args.only_gitlab:
+        fetch_from_github = False
+        fetch_from_gitlab = platforms.get('gitlab', {}).get('enabled', False)
+        fetch_from_jira = False
+    elif args.only_jira:
+        fetch_from_github = False
+        fetch_from_gitlab = False
+        fetch_from_jira = platforms.get('jira', {}).get('enabled', False)
+
+    # Print summary
+    print_header("Project History Fetcher")
+    print_info(f"Configuration: {config_file}")
+    print_info(f"Output directory: {output_dir}")
+    print()
+    print("Enabled platforms:")
+    if fetch_from_github:
+        github_config = platforms['github']
+        print(f"  • GitHub: {github_config['owner']}/{github_config['repo']}")
+    if fetch_from_gitlab:
+        gitlab_config = platforms['gitlab']
+        print(f"  • GitLab: {gitlab_config['project_id']}")
+    if fetch_from_jira:
+        jira_config = platforms['jira']
+        print(f"  • Jira: {jira_config['project_key']}")
+
+    if not (fetch_from_github or fetch_from_gitlab or fetch_from_jira):
+        print_warning("No platforms enabled. Run './setup-project' to configure.")
+        sys.exit(0)
+
+    # Track results
+    results = {}
+
+    # Fetch from each platform
+    if fetch_from_github:
+        results['github'] = fetch_github(config, output_dir, args.verbose, args.state)
+
+    if fetch_from_gitlab:
+        results['gitlab'] = fetch_gitlab(config, output_dir, args.verbose, args.state)
+
+    if fetch_from_jira:
+        results['jira'] = fetch_jira(config, output_dir, args.verbose, args.jira_status)
+
+    # Print summary
+    print_header("Summary")
+
+    success_count = sum(1 for success in results.values() if success)
+    total_count = len(results)
+
+    for platform, success in results.items():
+        status = "✓ Success" if success else "✗ Failed"
+        color = Color.GREEN if success else Color.RED
+        print(f"{color}{platform.title()}: {status}{Color.END}")
+
+    print()
+    if success_count == total_count:
+        print_success(f"All {total_count} platform(s) fetched successfully!")
+        print()
+        print_info("Next step: Run './generate-history-draft' to analyze the data")
+    else:
+        print_warning(f"{success_count}/{total_count} platform(s) fetched successfully")
+        print_info("Check error messages above and verify environment variables")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        print_error(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
