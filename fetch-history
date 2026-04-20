@@ -65,6 +65,56 @@ def load_config(config_file: Path) -> Dict:
         return json.load(f)
 
 
+def normalize_config(config: Dict) -> Dict:
+    """
+    Normalize configuration to a uniform multi-repo format.
+
+    Converts single-repo configs (platforms.github/gitlab as objects) to the
+    multi-repo format (repos array) for uniform processing.
+
+    Returns:
+        Dict with 'repos' list, 'platforms' (jira only), and 'output_dir'
+    """
+    if 'repos' in config:
+        return config
+
+    repos = []
+    platforms = config.get('platforms', {})
+
+    github = platforms.get('github', {})
+    if github.get('enabled'):
+        repos.append({
+            'name': github['repo'],
+            'local_path': '.',
+            'platform': 'github',
+            'owner': github['owner'],
+            'repo': github['repo'],
+        })
+
+    gitlab = platforms.get('gitlab', {})
+    if gitlab.get('enabled'):
+        project_id = gitlab['project_id']
+        repos.append({
+            'name': project_id.split('/')[-1],
+            'local_path': '.',
+            'platform': 'gitlab',
+            'project_id': project_id,
+            'url': gitlab['url'],
+        })
+
+    return {
+        'repos': repos,
+        'platforms': {'jira': platforms.get('jira', {'enabled': False})},
+        'output_dir': config.get('output_dir', './history'),
+    }
+
+
+def is_multi_repo(config: Dict) -> bool:
+    """Check if config describes multiple repositories."""
+    normalized = normalize_config(config)
+    return len(normalized['repos']) > 1
+
+
 def check_environment_variable(var_name: str) -> bool:
     """Check if an environment variable is set."""
     value = os.getenv(var_name)
@@ -107,12 +157,10 @@ def run_command(cmd: List[str], description: str, verbose: bool = False) -> bool
         return False
 
 
-def fetch_github(config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
-    """Fetch GitHub data."""
-    print_header("Fetching GitHub Data")
-
-    github_config = config['platforms']['github']
-    repo = f"{github_config['owner']}/{github_config['repo']}"
+def fetch_github_repo(repo_config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
+    """Fetch GitHub data for a single repository."""
+    repo = f"{repo_config['owner']}/{repo_config['repo']}"
+    print_header(f"Fetching GitHub Data: {repo}")
 
     if not check_environment_variable('GITHUB_TOKEN'):
         return False
@@ -127,13 +175,11 @@ def fetch_github(config: Dict, output_dir: str, verbose: bool, state_filter: str
     return run_command(cmd, f"GitHub: {repo}", verbose)
 
 
-def fetch_gitlab(config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
-    """Fetch GitLab data."""
-    print_header("Fetching GitLab Data")
-
-    gitlab_config = config['platforms']['gitlab']
-    project_id = gitlab_config['project_id']
-    gitlab_url = gitlab_config['url']
+def fetch_gitlab_repo(repo_config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
+    """Fetch GitLab data for a single repository."""
+    project_id = repo_config['project_id']
+    gitlab_url = repo_config['url']
+    print_header(f"Fetching GitLab Data: {project_id}")
 
     if not check_environment_variable('GITLAB_TOKEN'):
         return False
@@ -149,11 +195,22 @@ def fetch_gitlab(config: Dict, output_dir: str, verbose: bool, state_filter: str
     return run_command(cmd, f"GitLab: {project_id}", verbose)
 
 
-def fetch_jira(config: Dict, output_dir: str, verbose: bool, status_filter: str = None) -> bool:
-    """Fetch Jira data."""
+def fetch_repo(repo_config: Dict, output_dir: str, verbose: bool, state_filter: str) -> bool:
+    """Fetch data for a single repository based on its platform."""
+    platform = repo_config['platform']
+    if platform == 'github':
+        return fetch_github_repo(repo_config, output_dir, verbose, state_filter)
+    elif platform == 'gitlab':
+        return fetch_gitlab_repo(repo_config, output_dir, verbose, state_filter)
+    else:
+        print_error(f"Unknown platform: {platform}")
+        return False
+
+
+def fetch_jira(jira_config: Dict, output_dir: str, verbose: bool, status_filter: str = None) -> bool:
+    """Fetch Jira data (shared across all repos)."""
     print_header("Fetching Jira Data")
 
-    jira_config = config['platforms']['jira']
     project_key = jira_config['project_key']
     jira_url = jira_config['url']
 
@@ -201,6 +258,9 @@ def main():
 This script reads .project-history-config.json and fetches data from
 all enabled platforms (GitHub, GitLab, Jira).
 
+Supports both single-repo and multi-repo configurations.
+For multi-repo projects, data is stored under history/repos/<name>/.
+
 Before running, ensure environment variables are set:
   GITHUB_TOKEN - for GitHub (if enabled)
   GITLAB_TOKEN - for GitLab (if enabled)
@@ -218,17 +278,21 @@ Run './setup-project' if configuration doesn't exist.
     parser.add_argument(
         '--only-github',
         action='store_true',
-        help='Fetch only from GitHub'
+        help='Fetch only from GitHub repositories'
     )
     parser.add_argument(
         '--only-gitlab',
         action='store_true',
-        help='Fetch only from GitLab'
+        help='Fetch only from GitLab repositories'
     )
     parser.add_argument(
         '--only-jira',
         action='store_true',
         help='Fetch only from Jira'
+    )
+    parser.add_argument(
+        '--only-repo',
+        help='Fetch only from a specific repo by name (multi-repo configs)'
     )
     parser.add_argument(
         '--state',
@@ -248,64 +312,71 @@ Run './setup-project' if configuration doesn't exist.
 
     args = parser.parse_args()
 
-    # Load configuration
+    # Load and normalize configuration
     config_file = Path(args.config)
-    config = load_config(config_file)
+    raw_config = load_config(config_file)
+    config = normalize_config(raw_config)
 
     output_dir = config.get('output_dir', './history')
-    platforms = config.get('platforms', {})
+    repos = config.get('repos', [])
+    jira_config = config.get('platforms', {}).get('jira', {'enabled': False})
+    multi = len(repos) > 1
 
-    # Determine which platforms to fetch from
-    fetch_from_github = (not args.only_gitlab and not args.only_jira) and platforms.get('github', {}).get('enabled', False)
-    fetch_from_gitlab = (not args.only_github and not args.only_jira) and platforms.get('gitlab', {}).get('enabled', False)
-    fetch_from_jira = (not args.only_github and not args.only_gitlab) and platforms.get('jira', {}).get('enabled', False)
-
-    # Override if specific platform is requested
+    # Filter repos by platform or name
     if args.only_github:
-        fetch_from_github = platforms.get('github', {}).get('enabled', False)
-        fetch_from_gitlab = False
-        fetch_from_jira = False
+        repos = [r for r in repos if r['platform'] == 'github']
     elif args.only_gitlab:
-        fetch_from_github = False
-        fetch_from_gitlab = platforms.get('gitlab', {}).get('enabled', False)
-        fetch_from_jira = False
+        repos = [r for r in repos if r['platform'] == 'gitlab']
     elif args.only_jira:
-        fetch_from_github = False
-        fetch_from_gitlab = False
-        fetch_from_jira = platforms.get('jira', {}).get('enabled', False)
+        repos = []
+
+    if args.only_repo:
+        repos = [r for r in repos if r['name'] == args.only_repo]
+        if not repos:
+            print_error(f"No repository named '{args.only_repo}' found in config")
+            sys.exit(1)
+
+    fetch_jira_data = jira_config.get('enabled', False) and not args.only_github and not args.only_gitlab and not args.only_repo
+
+    if args.only_jira:
+        fetch_jira_data = jira_config.get('enabled', False)
 
     # Print summary
     print_header("Project History Fetcher")
     print_info(f"Configuration: {config_file}")
     print_info(f"Output directory: {output_dir}")
+    if multi:
+        print_info("Mode: multi-repository")
     print()
-    print("Enabled platforms:")
-    if fetch_from_github:
-        github_config = platforms['github']
-        print(f"  • GitHub: {github_config['owner']}/{github_config['repo']}")
-    if fetch_from_gitlab:
-        gitlab_config = platforms['gitlab']
-        print(f"  • GitLab: {gitlab_config['project_id']}")
-    if fetch_from_jira:
-        jira_config = platforms['jira']
+
+    if repos:
+        print("Repositories:")
+        for repo in repos:
+            project_desc = repo.get('project_id') or f"{repo.get('owner')}/{repo.get('repo')}"
+            print(f"  • {repo['name']} ({repo['platform'].title()}: {project_desc})")
+    if fetch_jira_data:
         print(f"  • Jira: {jira_config['project_key']}")
 
-    if not (fetch_from_github or fetch_from_gitlab or fetch_from_jira):
-        print_warning("No platforms enabled. Run './setup-project' to configure.")
+    if not repos and not fetch_jira_data:
+        print_warning("No platforms to fetch from. Run './setup-project' to configure.")
         sys.exit(0)
 
     # Track results
     results = {}
 
-    # Fetch from each platform
-    if fetch_from_github:
-        results['github'] = fetch_github(config, output_dir, args.verbose, args.state)
+    # Fetch from each repository
+    for repo in repos:
+        if multi:
+            repo_output_dir = str(Path(output_dir) / "repos" / repo['name'])
+        else:
+            repo_output_dir = output_dir
 
-    if fetch_from_gitlab:
-        results['gitlab'] = fetch_gitlab(config, output_dir, args.verbose, args.state)
+        result_key = f"{repo['platform']}:{repo['name']}" if multi else repo['platform']
+        results[result_key] = fetch_repo(repo, repo_output_dir, args.verbose, args.state)
 
-    if fetch_from_jira:
-        results['jira'] = fetch_jira(config, output_dir, args.verbose, args.jira_status)
+    # Fetch Jira (shared, always at top-level output_dir)
+    if fetch_jira_data:
+        results['jira'] = fetch_jira(jira_config, output_dir, args.verbose, args.jira_status)
 
     # Print summary
     print_header("Summary")
@@ -313,18 +384,18 @@ Run './setup-project' if configuration doesn't exist.
     success_count = sum(1 for success in results.values() if success)
     total_count = len(results)
 
-    for platform, success in results.items():
+    for source, success in results.items():
         status = "✓ Success" if success else "✗ Failed"
         color = Color.GREEN if success else Color.RED
-        print(f"{color}{platform.title()}: {status}{Color.END}")
+        print(f"{color}{source}: {status}{Color.END}")
 
     print()
     if success_count == total_count:
-        print_success(f"All {total_count} platform(s) fetched successfully!")
+        print_success(f"All {total_count} source(s) fetched successfully!")
         print()
         print_info("Next step: Run './generate-history-draft' to analyze the data")
     else:
-        print_warning(f"{success_count}/{total_count} platform(s) fetched successfully")
+        print_warning(f"{success_count}/{total_count} source(s) fetched successfully")
         print_info("Check error messages above and verify environment variables")
         sys.exit(1)
 
