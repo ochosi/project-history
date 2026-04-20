@@ -67,12 +67,57 @@ class StateManager:
         self.save()
 
 
+def normalize_config(config: Dict) -> Dict:
+    """
+    Normalize configuration to a uniform multi-repo format.
+
+    Converts single-repo configs (platforms.github/gitlab as objects) to the
+    multi-repo format (repos array) for uniform processing.
+
+    Returns:
+        Dict with 'repos' list, 'platforms' (jira only), and 'output_dir'
+    """
+    if 'repos' in config:
+        return config
+
+    repos = []
+    platforms = config.get('platforms', {})
+
+    github = platforms.get('github', {})
+    if github.get('enabled'):
+        repos.append({
+            'name': github['repo'],
+            'local_path': '.',
+            'platform': 'github',
+            'owner': github['owner'],
+            'repo': github['repo'],
+        })
+
+    gitlab = platforms.get('gitlab', {})
+    if gitlab.get('enabled'):
+        project_id = gitlab['project_id']
+        repos.append({
+            'name': project_id.split('/')[-1],
+            'local_path': '.',
+            'platform': 'gitlab',
+            'project_id': project_id,
+            'url': gitlab['url'],
+        })
+
+    return {
+        'repos': repos,
+        'platforms': {'jira': platforms.get('jira', {'enabled': False})},
+        'output_dir': config.get('output_dir', './history'),
+    }
+
+
 class GitAnalyzer:
     """Analyzes git repository history."""
 
-    def __init__(self, repo_path: Path, verbose: bool = False):
+    def __init__(self, repo_path: Path, verbose: bool = False, repo_name: str = None):
         self.repo_path = repo_path
         self.verbose = verbose
+        self.repo_name = repo_name
 
     def log(self, message: str):
         """Log message if verbose."""
@@ -81,7 +126,8 @@ class GitAnalyzer:
 
     def get_all_commits(self) -> List[Dict[str, Any]]:
         """Get all commits from git history."""
-        self.log("Fetching all commits from git history...")
+        label = f" ({self.repo_name})" if self.repo_name else ""
+        self.log(f"Fetching all commits from git history{label}...")
 
         # Format: %H|%an|%ae|%at|%s|%b
         cmd = [
@@ -109,7 +155,7 @@ class GitAnalyzer:
             sha, author, email, timestamp, subject = parts[:5]
             body = parts[5] if len(parts) > 5 else ""
 
-            commits.append({
+            commit = {
                 'sha': sha.strip(),
                 'author': author.strip(),
                 'email': email.strip(),
@@ -117,9 +163,12 @@ class GitAnalyzer:
                 'subject': subject.strip(),
                 'body': body.strip(),
                 'message': f"{subject.strip()}\n{body.strip()}".strip()
-            })
+            }
+            if self.repo_name:
+                commit['repo'] = self.repo_name
+            commits.append(commit)
 
-        self.log(f"Found {len(commits)} commits")
+        self.log(f"Found {len(commits)} commits{label}")
         return commits
 
     def get_commit_stats(self, sha: str) -> Dict[str, int]:
@@ -183,11 +232,33 @@ class IssueCorrelator:
         r'\b([A-Z][A-Z0-9]+-\d+)\b',  # PROJ-123, ABC-456
     ]
 
-    def __init__(self, history_path: Path, verbose: bool = False):
+    def __init__(self, history_path: Path, verbose: bool = False,
+                 repo_data_paths: Optional[Dict[str, Path]] = None):
+        """
+        Initialize the correlator.
+
+        Args:
+            history_path: Base history directory (used for Jira and single-repo data)
+            verbose: Enable verbose logging
+            repo_data_paths: For multi-repo, maps repo name → data directory.
+                             When set, PR/MR data is loaded per-repo from these paths.
+        """
         self.history_path = history_path
         self.verbose = verbose
-        self.github_prs = self.load_github_prs()
-        self.gitlab_mrs = self.load_gitlab_mrs()
+        self.repo_data_paths = repo_data_paths
+
+        if repo_data_paths:
+            self._github_prs_by_repo = {}
+            self._gitlab_mrs_by_repo = {}
+            for repo_name, repo_path in repo_data_paths.items():
+                self._github_prs_by_repo[repo_name] = self._load_github_prs_from(repo_path)
+                self._gitlab_mrs_by_repo[repo_name] = self._load_gitlab_mrs_from(repo_path)
+        else:
+            self._github_prs_by_repo = None
+            self._gitlab_mrs_by_repo = None
+
+        self.github_prs = self._load_github_prs_from(history_path) if not repo_data_paths else {}
+        self.gitlab_mrs = self._load_gitlab_mrs_from(history_path) if not repo_data_paths else {}
         self.jira_issues = self.load_jira_issues()
 
     def log(self, message: str):
@@ -195,12 +266,12 @@ class IssueCorrelator:
         if self.verbose:
             print(message)
 
-    def load_github_prs(self) -> Dict[int, Dict[str, Any]]:
-        """Load all GitHub PR metadata from markdown files."""
-        self.log("Loading GitHub PR metadata...")
+    def _load_github_prs_from(self, base_path: Path) -> Dict[int, Dict[str, Any]]:
+        """Load GitHub PR metadata from markdown files under a base path."""
+        self.log(f"Loading GitHub PR metadata from {base_path}...")
         prs = {}
 
-        pr_dir = self.history_path / "pull-requests"
+        pr_dir = base_path / "pull-requests"
         if not pr_dir.exists():
             return prs
 
@@ -214,12 +285,12 @@ class IssueCorrelator:
         self.log(f"Loaded {len(prs)} GitHub PRs")
         return prs
 
-    def load_gitlab_mrs(self) -> Dict[int, Dict[str, Any]]:
-        """Load all GitLab MR metadata from markdown files."""
-        self.log("Loading GitLab MR metadata...")
+    def _load_gitlab_mrs_from(self, base_path: Path) -> Dict[int, Dict[str, Any]]:
+        """Load GitLab MR metadata from markdown files under a base path."""
+        self.log(f"Loading GitLab MR metadata from {base_path}...")
         mrs = {}
 
-        mr_dir = self.history_path / "merge-requests"
+        mr_dir = base_path / "merge-requests"
         if not mr_dir.exists():
             return mrs
 
@@ -232,6 +303,30 @@ class IssueCorrelator:
 
         self.log(f"Loaded {len(mrs)} GitLab MRs")
         return mrs
+
+    def get_github_prs(self, repo_name: Optional[str] = None) -> Dict[int, Dict[str, Any]]:
+        """Get GitHub PRs, optionally filtered by repo name."""
+        if repo_name and self._github_prs_by_repo:
+            return self._github_prs_by_repo.get(repo_name, {})
+        return self.github_prs
+
+    def get_gitlab_mrs(self, repo_name: Optional[str] = None) -> Dict[int, Dict[str, Any]]:
+        """Get GitLab MRs, optionally filtered by repo name."""
+        if repo_name and self._gitlab_mrs_by_repo:
+            return self._gitlab_mrs_by_repo.get(repo_name, {})
+        return self.gitlab_mrs
+
+    def all_github_prs(self) -> Dict[str, Dict[int, Dict[str, Any]]]:
+        """Get all GitHub PRs across all repos. Returns {repo_name: {pr_num: data}}."""
+        if self._github_prs_by_repo:
+            return self._github_prs_by_repo
+        return {None: self.github_prs}
+
+    def all_gitlab_mrs(self) -> Dict[str, Dict[int, Dict[str, Any]]]:
+        """Get all GitLab MRs across all repos. Returns {repo_name: {mr_num: data}}."""
+        if self._gitlab_mrs_by_repo:
+            return self._gitlab_mrs_by_repo
+        return {None: self.gitlab_mrs}
 
     def load_jira_issues(self) -> Dict[str, Dict[str, Any]]:
         """Load all Jira issue metadata from markdown files."""
@@ -292,7 +387,7 @@ class IssueCorrelator:
                 print(f"Warning: Failed to parse {file_path}: {e}")
             return None
 
-    def extract_references(self, message: str) -> Dict[str, Any]:
+    def extract_references(self, message: str, repo_name: Optional[str] = None) -> Dict[str, Any]:
         """Extract all references (GitHub PRs, GitLab MRs, Jira tickets) from commit message."""
         refs = {
             'github_pr': None,
@@ -300,12 +395,15 @@ class IssueCorrelator:
             'jira_issues': []
         }
 
+        github_prs = self.get_github_prs(repo_name)
+        gitlab_mrs = self.get_gitlab_mrs(repo_name)
+
         # Extract GitHub PR
         for pattern in self.GITHUB_PR_PATTERNS:
             matches = re.findall(pattern, message, re.IGNORECASE)
             if matches and not refs['github_pr']:
                 pr_num = int(matches[0])
-                if pr_num in self.github_prs:
+                if pr_num in github_prs:
                     refs['github_pr'] = pr_num
                     break
 
@@ -314,7 +412,7 @@ class IssueCorrelator:
             matches = re.findall(pattern, message, re.IGNORECASE)
             if matches and not refs['gitlab_mr']:
                 mr_num = int(matches[0])
-                if mr_num in self.gitlab_mrs:
+                if mr_num in gitlab_mrs:
                     refs['gitlab_mr'] = mr_num
                     break
 
@@ -337,10 +435,13 @@ class IssueCorrelator:
         matched_jira = 0
 
         for commit in commits:
-            refs = self.extract_references(commit['message'])
+            repo_name = commit.get('repo')
+            refs = self.extract_references(commit['message'], repo_name=repo_name)
 
             # Only store if there are references
             if refs['github_pr'] or refs['gitlab_mr'] or refs['jira_issues']:
+                if repo_name:
+                    refs['repo'] = repo_name
                 correlation[commit['sha']] = refs
 
                 if refs['github_pr']:
@@ -546,17 +647,49 @@ class HistoryGenerator:
     }
 
     def __init__(self, repo_path: Path, history_path: Path, output_path: Path,
-                 verbose: bool = False, resume: bool = True):
-        self.repo_path = repo_path
+                 verbose: bool = False, resume: bool = True,
+                 repo_configs: Optional[List[Dict[str, Any]]] = None):
+        """
+        Initialize the history generator.
+
+        Args:
+            repo_path: Path to git repository (single-repo mode)
+            history_path: Path to history archive
+            output_path: Output directory for generated files
+            verbose: Enable verbose output
+            resume: Resume from existing state
+            repo_configs: For multi-repo mode, list of repo config dicts with
+                          keys: name, local_path, platform. When set, repo_path
+                          is ignored and commits are merged from all repos.
+        """
         self.history_path = history_path
         self.output_path = output_path
         self.verbose = verbose
+        self.repo_configs = repo_configs
 
         self.state = StateManager(output_path / '.history-gen-state.json')
-        self.git = GitAnalyzer(repo_path, verbose)
-        self.correlator = IssueCorrelator(history_path, verbose)
         self.theme_detector = ThemeDetector()
         self.scorer = ImportanceScorer(verbose)
+
+        if repo_configs and len(repo_configs) > 1:
+            self.repo_path = None
+            self.git_analyzers = {
+                rc['name']: GitAnalyzer(Path(rc['local_path']), verbose, repo_name=rc['name'])
+                for rc in repo_configs
+            }
+            repo_data_paths = {
+                rc['name']: history_path / "repos" / rc['name']
+                for rc in repo_configs
+            }
+            self.correlator = IssueCorrelator(
+                history_path, verbose, repo_data_paths=repo_data_paths
+            )
+        else:
+            self.repo_path = repo_path
+            self.git_analyzers = None
+            self.correlator = IssueCorrelator(history_path, verbose)
+
+        self.git = GitAnalyzer(repo_path, verbose) if not self.git_analyzers else None
 
         self.commits = []
         self.correlation = {}
@@ -569,6 +702,19 @@ class HistoryGenerator:
         """Log message."""
         if self.verbose or force:
             print(message)
+
+    def _get_all_commits(self) -> List[Dict[str, Any]]:
+        """Get all commits, merging from multiple repos if configured."""
+        if self.git_analyzers:
+            all_commits = []
+            for name, analyzer in self.git_analyzers.items():
+                repo_commits = analyzer.get_all_commits()
+                all_commits.extend(repo_commits)
+            all_commits.sort(key=lambda c: c['date'])
+            self.log(f"Merged {len(all_commits)} commits from {len(self.git_analyzers)} repositories", force=True)
+            return all_commits
+        else:
+            return self.git.get_all_commits()
 
     def load_or_generate_correlation(self) -> Dict[str, Any]:
         """Load correlation data or generate it."""
@@ -587,10 +733,10 @@ class HistoryGenerator:
 
         self.log("Generating correlation data...", force=True)
 
-        # Get all commits
-        self.commits = self.git.get_all_commits()
+        # Get all commits (from single or multiple repos)
+        self.commits = self._get_all_commits()
 
-        # Correlate to PRs
+        # Correlate to PRs/MRs/Jira
         self.correlation = self.correlator.correlate_commits(self.commits)
 
         # Save correlation data
@@ -669,10 +815,11 @@ class HistoryGenerator:
                 # Score and mark important commits
                 # Try to get data from GitHub PR, GitLab MR, or first Jira issue
                 issue_data = None
+                ref_repo = refs.get('repo')
                 if refs.get('github_pr'):
-                    issue_data = self.correlator.github_prs.get(refs['github_pr'])
+                    issue_data = self.correlator.get_github_prs(ref_repo).get(refs['github_pr'])
                 elif refs.get('gitlab_mr'):
-                    issue_data = self.correlator.gitlab_mrs.get(refs['gitlab_mr'])
+                    issue_data = self.correlator.get_gitlab_mrs(ref_repo).get(refs['gitlab_mr'])
                 elif refs.get('jira_issues'):
                     issue_data = self.correlator.jira_issues.get(refs['jira_issues'][0])
 
@@ -680,9 +827,10 @@ class HistoryGenerator:
                 importance_marker = " ⭐" if score >= 20 else ""
 
                 date_str = commit['date'].strftime('%Y-%m-%d')
+                repo_tag = f" `[{commit['repo']}]`" if commit.get('repo') else ""
                 output.append(
                     f"- **{date_str}**: {commit['subject']}{ref_text}{importance_marker} "
-                    f"_by @{commit['author']}_\n"
+                    f"_by @{commit['author']}_{repo_tag}\n"
                 )
 
         # Write timeline file
@@ -730,36 +878,42 @@ class HistoryGenerator:
         data_dir = self.output_path / 'data'
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save importance scores for top GitHub PRs
+        # Save importance scores for top GitHub PRs (across all repos)
         pr_scores = {}
-        for pr_num, pr_data in self.correlator.github_prs.items():
-            score = self.scorer.score_pr(pr_data)
-            if score >= 15:  # Only save significant ones
-                pr_scores[pr_num] = {
-                    'score': score,
-                    'title': pr_data.get('title'),
-                    'author': pr_data.get('author'),
-                    'merged': pr_data.get('merged'),
-                    'created': pr_data.get('created')
-                }
+        for repo_name, prs in self.correlator.all_github_prs().items():
+            for pr_num, pr_data in prs.items():
+                score = self.scorer.score_pr(pr_data)
+                if score >= 15:
+                    key = f"{repo_name}:{pr_num}" if repo_name else str(pr_num)
+                    pr_scores[key] = {
+                        'score': score,
+                        'title': pr_data.get('title'),
+                        'author': pr_data.get('author'),
+                        'merged': pr_data.get('merged'),
+                        'created': pr_data.get('created'),
+                        'repo': repo_name
+                    }
 
         if pr_scores:
             with open(data_dir / 'important_prs.json', 'w') as f:
                 json.dump(pr_scores, f, indent=2)
             self.log(f"Saved {len(pr_scores)} important GitHub PRs to data/important_prs.json")
 
-        # Save importance scores for top GitLab MRs
+        # Save importance scores for top GitLab MRs (across all repos)
         mr_scores = {}
-        for mr_num, mr_data in self.correlator.gitlab_mrs.items():
-            score = self.scorer.score_pr(mr_data)
-            if score >= 15:  # Only save significant ones
-                mr_scores[mr_num] = {
-                    'score': score,
-                    'title': mr_data.get('title'),
-                    'author': mr_data.get('author'),
-                    'merged': mr_data.get('merged_at') is not None,
-                    'created': mr_data.get('created')
-                }
+        for repo_name, mrs in self.correlator.all_gitlab_mrs().items():
+            for mr_num, mr_data in mrs.items():
+                score = self.scorer.score_pr(mr_data)
+                if score >= 15:
+                    key = f"{repo_name}:{mr_num}" if repo_name else str(mr_num)
+                    mr_scores[key] = {
+                        'score': score,
+                        'title': mr_data.get('title'),
+                        'author': mr_data.get('author'),
+                        'merged': mr_data.get('merged_at') is not None,
+                        'created': mr_data.get('created'),
+                        'repo': repo_name
+                    }
 
         if mr_scores:
             with open(data_dir / 'important_mrs.json', 'w') as f:
@@ -804,7 +958,10 @@ class HistoryGenerator:
     def run(self, phase: Optional[str] = None):
         """Run history generation."""
         self.log("=== Project History Generator ===", force=True)
-        self.log(f"Repository: {self.repo_path}", force=True)
+        if self.git_analyzers:
+            self.log(f"Repositories: {', '.join(self.git_analyzers.keys())}", force=True)
+        else:
+            self.log(f"Repository: {self.repo_path}", force=True)
         self.log(f"Output: {self.output_path}", force=True)
         self.log("", force=True)
 
@@ -831,13 +988,27 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Generate project history from git commits and issues/PRs/MRs/tickets",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+For multi-repository projects, use --config to read repository paths from
+the project configuration file (.project-history-config.json).
+
+Single-repo mode (default):
+  %(prog)s --repo . --history ./history
+
+Multi-repo mode (via config):
+  %(prog)s --config .project-history-config.json
+        """
     )
 
     parser.add_argument(
+        '--config',
+        help='Configuration file for multi-repo support (reads repo paths from config)'
+    )
+    parser.add_argument(
         '--repo',
         default='.',
-        help='Path to git repository (default: current directory)'
+        help='Path to git repository (default: current directory, ignored with --config)'
     )
     parser.add_argument(
         '--history',
@@ -867,13 +1038,41 @@ def main():
 
     args = parser.parse_args()
 
+    repo_configs = None
+    history_path = Path(args.history)
+    output_path = Path(args.output)
+    repo_path = Path(args.repo)
+
+    if args.config:
+        config_file = Path(args.config)
+        if not config_file.exists():
+            print(f"Error: Configuration file not found: {config_file}", file=sys.stderr)
+            sys.exit(1)
+
+        with open(config_file, 'r') as f:
+            raw_config = json.load(f)
+
+        config = normalize_config(raw_config)
+        repo_configs = config.get('repos', [])
+        history_path = Path(config.get('output_dir', './history'))
+        output_path = history_path / 'draft'
+
+        if not repo_configs:
+            print("Error: No repositories found in config", file=sys.stderr)
+            sys.exit(1)
+
+        if len(repo_configs) == 1:
+            repo_path = Path(repo_configs[0]['local_path'])
+            repo_configs = None
+
     try:
         generator = HistoryGenerator(
-            repo_path=Path(args.repo),
-            history_path=Path(args.history),
-            output_path=Path(args.output),
+            repo_path=repo_path,
+            history_path=history_path,
+            output_path=output_path,
             verbose=args.verbose,
-            resume=not args.no_resume
+            resume=not args.no_resume,
+            repo_configs=repo_configs
         )
         generator.run(phase=args.phase)
     except KeyboardInterrupt:
