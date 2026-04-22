@@ -25,7 +25,7 @@ When a user opens this repository in Claude Code, they are likely trying to:
 ## Typical User Workflow
 
 ### First-Time Setup
-1. The user should run `./setup-project` to configure:
+1. The user should run `./tools/setup-project` from the project root to configure:
    - Git remote (auto-detected from git or manually specified)
    - Platform (GitHub, GitLab, or both)
    - Jira integration (optional)
@@ -36,6 +36,7 @@ When a user opens this repository in Claude Code, they are likely trying to:
    export GITHUB_TOKEN="ghp_..."      # For GitHub
    export GITLAB_TOKEN="glpat-..."    # For GitLab
    export JIRA_TOKEN="..."            # For Jira
+   export JIRA_EMAIL="user@co.com"   # For Atlassian Cloud (*.atlassian.net)
    export JIRA_URL="https://..."      # Jira instance URL
    export JIRA_PROJECT="PROJ"         # Jira project key
    ```
@@ -103,8 +104,12 @@ All authentication is done via environment variables (never committed to git):
 4. Point them to `HISTORY_GENERATION_GUIDE.md` for the curation workflow
 
 ### When the user asks to "copy these tools to my project":
-1. Copy all scripts to their project's `tools/` directory
-2. Run `./setup-project` in their project
+1. Copy only the scripts and guide to their project's `tools/` directory:
+   `fetch-history`, `fetch-github-history`, `fetch-gitlab-history`,
+   `fetch-jira-history`, `generate-history-draft`, `setup-project`,
+   and `HISTORY_GENERATION_GUIDE.md`.
+   Do NOT copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other repo files.
+2. Run `./tools/setup-project` from the project root
 3. Guide them through the complete workflow
 
 ## Important Notes
