@@ -111,7 +111,7 @@ class GitLabHistoryFetcher:
                         page += 1
                         self.log(f"Fetching page {page}...")
                     else:
-                        break
+                        return items
 
                     break  # Success, exit retry loop
 
@@ -122,8 +122,6 @@ class GitLabHistoryFetcher:
                         time.sleep(wait)
                     else:
                         raise
-            else:
-                break  # No more pages
 
         return items
 
