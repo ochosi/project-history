@@ -131,13 +131,12 @@ def detect_git_remote(cwd: Optional[str] = None) -> Optional[Tuple[str, str, str
         return None
 
 
-def detect_nearby_repos() -> List[Dict]:
+def detect_nearby_repos(project_root: Path = None) -> List[Dict]:
     """
-    Scan for git repositories in subdirectories and sibling directories.
+    Scan for git repositories in subdirectories of the project root.
 
-    Checks both the current directory's children and the parent directory's
-    children, since scripts typically live in a tools/ subdirectory while
-    repos are siblings (e.g., project/tools/, project/repo-a/, project/repo-b/).
+    Args:
+        project_root: The project root directory to search. Defaults to CWD.
 
     Returns:
         List of dicts with keys: path, name, platform, platform_info
@@ -145,7 +144,10 @@ def detect_nearby_repos() -> List[Dict]:
     repos = []
     seen_paths = set()
 
-    for search_root in [Path('.'), Path('..')]:
+    if project_root is None:
+        project_root = Path('.')
+
+    for search_root in [project_root]:
         if not search_root.is_dir():
             continue
 
@@ -159,7 +161,7 @@ def detect_nearby_repos() -> List[Dict]:
             seen_paths.add(real_path)
 
             repo_info = {
-                'path': str(entry),
+                'path': str(real_path),
                 'name': entry.name,
                 'platform': None,
                 'platform_info': {}
@@ -488,16 +490,22 @@ def display_next_steps(config: Dict):
         print(f"     Get token at: {jira_url}/secure/ViewProfile.jspa (API Tokens)")
         print()
 
+    script_dir = Path(__file__).parent.resolve()
+    if script_dir.name == 'tools':
+        cmd_prefix = './tools/'
+    else:
+        cmd_prefix = './'
+
     print("2. Fetch history data:")
-    print("     ./fetch-history")
+    print(f"     {cmd_prefix}fetch-history")
     print()
 
     print("3. Generate timeline and analysis:")
-    print("     ./generate-history-draft")
+    print(f"     {cmd_prefix}generate-history-draft")
     print()
 
     print("4. Follow the AI-assisted curation workflow:")
-    print("     See HISTORY_GENERATION_GUIDE.md for detailed prompts")
+    print(f"     See {cmd_prefix}HISTORY_GENERATION_GUIDE.md for detailed prompts")
     print()
 
 
@@ -509,7 +517,12 @@ def main():
     print("You'll be asked about Git hosting (GitHub/GitLab) and optional Jira integration.")
     print()
 
-    config_file = Path(".project-history-config.json")
+    script_dir = Path(__file__).parent.resolve()
+    if script_dir.name == 'tools':
+        project_root = script_dir.parent
+    else:
+        project_root = Path.cwd()
+    config_file = project_root / ".project-history-config.json"
 
     # Check if config already exists
     if config_file.exists():
@@ -521,7 +534,7 @@ def main():
 
     # Detect environment: is CWD a git repo? Are there nearby repos?
     detected = detect_git_remote()
-    nearby_repos = detect_nearby_repos()
+    nearby_repos = detect_nearby_repos(project_root)
 
     multi_repo = False
 
@@ -610,14 +623,12 @@ def _setup_multi_repo(config_file: Path, detected_repos: List[Dict]):
     print("You can add additional repositories beyond those auto-detected.")
     print()
 
-    repos = []
-
-    # Configure detected repos
-    for i, repo_info in enumerate(detected_repos, 1):
+    # First, ask which detected repos to include
+    included_repos = []
+    for repo_info in detected_repos:
         include = get_yes_no(f"Include {repo_info['path']}?", default=True)
         if include:
-            repo_config = configure_repo(repo_info, len(repos) + 1, "?")
-            repos.append(repo_config)
+            included_repos.append(repo_info)
 
     # Allow adding more repos manually
     while get_yes_no("\nAdd another repository?", default=False):
@@ -643,7 +654,17 @@ def _setup_multi_repo(config_file: Path, detected_repos: List[Dict]):
             elif platform == 'gitlab':
                 repo_info['platform_info'] = {'project_id': project_path, 'url': url}
 
-        repo_config = configure_repo(repo_info, len(repos) + 1, "?")
+        included_repos.append(repo_info)
+
+    if not included_repos:
+        print_error("At least one repository must be configured")
+        sys.exit(1)
+
+    # Now configure each included repo with correct numbering
+    total = len(included_repos)
+    repos = []
+    for i, repo_info in enumerate(included_repos, 1):
+        repo_config = configure_repo(repo_info, i, total)
         repos.append(repo_config)
 
     if not repos:

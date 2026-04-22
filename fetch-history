@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 
+SCRIPT_DIR = Path(__file__).parent.resolve()
+
 
 class Color:
     """ANSI color codes."""
@@ -169,7 +171,7 @@ def fetch_github_repo(repo_config: Dict, output_dir: str, verbose: bool, state_f
         return False
 
     cmd = [
-        './fetch-github-history',
+        str(SCRIPT_DIR / 'fetch-github-history'),
         '--repo', repo,
         '--output', output_dir,
         '--state', state_filter
@@ -188,7 +190,7 @@ def fetch_gitlab_repo(repo_config: Dict, output_dir: str, verbose: bool, state_f
         return False
 
     cmd = [
-        './fetch-gitlab-history',
+        str(SCRIPT_DIR / 'fetch-gitlab-history'),
         '--project', project_id,
         '--gitlab-url', gitlab_url,
         '--output', output_dir,
@@ -227,7 +229,7 @@ def fetch_jira(jira_config: Dict, output_dir: str, verbose: bool, status_filter:
     env['JIRA_PROJECT'] = project_key
 
     cmd = [
-        './fetch-jira-history',
+        str(SCRIPT_DIR / 'fetch-jira-history'),
         '--project', project_key,
         '--jira-url', jira_url,
         '--output', output_dir,
@@ -316,12 +318,23 @@ Run './setup-project' if configuration doesn't exist.
 
     args = parser.parse_args()
 
-    # Load and normalize configuration
+    # Load configuration: check CWD, then script's directory, then project root
     config_file = Path(args.config)
+    if not config_file.exists():
+        script_dir = Path(__file__).parent.resolve()
+        alt = script_dir / config_file.name
+        if alt.exists():
+            config_file = alt
+        elif script_dir.name == 'tools':
+            alt2 = script_dir.parent / config_file.name
+            if alt2.exists():
+                config_file = alt2
     raw_config = load_config(config_file)
     config = normalize_config(raw_config)
 
-    output_dir = config.get('output_dir', './history')
+    # Resolve relative paths against config file location, not CWD
+    config_dir = config_file.parent.resolve()
+    output_dir = str((config_dir / config.get('output_dir', './history')).resolve())
     repos = config.get('repos', [])
     jira_config = config.get('platforms', {}).get('jira', {'enabled': False})
     multi = len(repos) > 1
