@@ -32,7 +32,8 @@ class JiraHistoryFetcher:
     RETRY_DELAY = 5
     MAX_RESULTS = 100  # Jira API max per page
 
-    def __init__(self, jira_url: str, project_key: str, token: str, output_dir: str, verbose: bool = False):
+    def __init__(self, jira_url: str, project_key: str, token: str, output_dir: str,
+                 verbose: bool = False, email: str = None):
         """
         Initialize the fetcher.
 
@@ -42,6 +43,7 @@ class JiraHistoryFetcher:
             token: Jira API token or Personal Access Token
             output_dir: Directory to save markdown files
             verbose: Enable verbose logging
+            email: Email for Atlassian Cloud Basic auth
         """
         self.jira_url = jira_url.rstrip('/')
         self.project_key = project_key.upper()
@@ -50,10 +52,20 @@ class JiraHistoryFetcher:
         self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update({
-            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         })
+        if 'atlassian.net' in self.jira_url:
+            if not email:
+                print("Error: Atlassian Cloud requires an email address. Set JIRA_EMAIL environment variable or use --email", file=sys.stderr)
+                sys.exit(1)
+            import base64
+            credentials = base64.b64encode(f"{email}:{token}".encode()).decode()
+            self.session.headers["Authorization"] = f"Basic {credentials}"
+            self.log(f"Using Basic auth for Atlassian Cloud (email: {email})", force=True)
+        else:
+            self.session.headers["Authorization"] = f"Bearer {token}"
+            self.log("Using Bearer auth for self-hosted Jira", force=True)
         self.stats = {
             "issues_fetched": 0,
             "api_calls": 0,
@@ -386,29 +398,29 @@ url: {url}
         jql += " ORDER BY created ASC"
 
         issues = []
-        start_at = 0
+        next_page_token = None
 
         while True:
             params = {
                 "jql": jql,
-                "startAt": start_at,
                 "maxResults": self.MAX_RESULTS,
                 "fields": "*all",
             }
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
 
-            self.log(f"Fetching issues starting at {start_at}...")
-            data = self.api_request("search", params)
+            data = self.api_request("search/jql", params)
 
             page_issues = data.get("issues", [])
             issues.extend(page_issues)
 
-            total = data.get("total", 0)
-            start_at += len(page_issues)
+            self.log(f"  Fetched {len(issues)} issues so far", force=True)
 
-            self.log(f"Fetched {len(issues)}/{total} issues")
+            if data.get("isLast", True):
+                break
 
-            # Check if we've fetched all issues
-            if start_at >= total:
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
                 break
 
         self.log(f"Fetched {len(issues)} total issues", force=True)
@@ -528,6 +540,10 @@ Environment variables:
         help="Jira API token. Uses JIRA_TOKEN env var if not specified."
     )
     parser.add_argument(
+        "--email",
+        help="Email address for Atlassian Cloud auth. Uses JIRA_EMAIL env var if not specified."
+    )
+    parser.add_argument(
         "--status",
         help="Filter by status (e.g., 'Open', 'Closed', 'Done')"
     )
@@ -562,6 +578,9 @@ Environment variables:
         print("Error: Jira project key required. Set JIRA_PROJECT environment variable or use --project", file=sys.stderr)
         sys.exit(1)
 
+    # Get email (required for Atlassian Cloud)
+    email = args.email or os.getenv("JIRA_EMAIL")
+
     if args.dry_run:
         print(f"Dry run mode - would fetch from Jira project {project_key}")
         print(f"  Jira URL: {jira_url}")
@@ -576,7 +595,8 @@ Environment variables:
             project_key=project_key,
             token=token,
             output_dir=args.output,
-            verbose=args.verbose
+            verbose=args.verbose,
+            email=email
         )
         fetcher.run(status_filter=args.status)
     except KeyboardInterrupt:
