@@ -2,6 +2,38 @@
 
 This guide provides a complete workflow for generating comprehensive project histories from Git repositories using automated tools and AI-assisted narrative writing.
 
+## Directory Layout and Path Rules
+
+These scripts live in a `tools/` subdirectory inside the target project.
+All commands in this guide are run from the **project root**, not from `tools/`.
+
+```
+your-project/              ← run all commands from here
+├── .project-history-config.json   ← created by setup-project
+├── tools/
+│   ├── fetch-history                  ← unified fetcher
+│   ├── fetch-github-history
+│   ├── fetch-gitlab-history
+│   ├── fetch-jira-history
+│   ├── generate-history-draft
+│   ├── setup-project
+│   └── HISTORY_GENERATION_GUIDE.md    ← this file
+├── repo-a/                ← git repositories being analyzed
+├── repo-b/                ← (may also be the project root itself)
+└── history/               ← output directory (created by the scripts)
+```
+
+**How paths work:**
+- The **config file** (`.project-history-config.json`) lives in the project
+  root. The scripts auto-detect it — you do not need to pass `--config` or
+  set any path.
+- **Paths inside the config** (`local_path`, `output_dir`) are relative to the
+  config file's location, not to your working directory. The scripts resolve
+  them automatically.
+- **Do not manually check or resolve paths from the config.** Just run the
+  scripts — they handle all path resolution internally and will print clear
+  errors if something is wrong.
+
 ## Overview
 
 The history generation process combines:
@@ -20,7 +52,7 @@ The history generation process combines:
 - AI assistant with file access (Claude, GPT-4, etc.)
 
 ### Required Scripts
-All scripts are included in this directory:
+All scripts are included in the `tools/` directory:
 - `setup-project` - Interactive configuration wizard
 - `fetch-history` - Unified fetcher for all platforms
 - `fetch-github-history` - Fetches GitHub data as markdown
@@ -33,34 +65,68 @@ All scripts are included in this directory:
 # Install Python dependencies
 pip install requests
 
-# Run interactive setup
-./setup-project
+# Run interactive setup (creates .project-history-config.json in project root)
+./tools/setup-project
 
 # Set your authentication tokens (as prompted by setup-project)
 export GITHUB_TOKEN="your_github_token_here"    # If using GitHub
 export GITLAB_TOKEN="your_gitlab_token_here"    # If using GitLab
 export JIRA_TOKEN="your_jira_token_here"        # If using Jira
-
-# Make scripts executable
-chmod +x setup-project fetch-history fetch-github-history fetch-gitlab-history fetch-jira-history generate-history-draft
+export JIRA_EMAIL="your_email@company.com"     # Required for Atlassian Cloud
 ```
 
 ## Workflow
+
+**Important**: If the user asks you to start at a specific phase, assume all
+prior setup is complete. Do not re-run setup or manually verify configuration
+files — just run the scripts. They will report clear errors if anything is
+missing.
 
 ### Phase 1: Data Collection (Day 1)
 
 #### Step 1: Fetch Platform Data
 
-```bash
-# From your repository root
-# Fetch from all configured platforms
-./tools/fetch-history --verbose
+**Before running**: Read the config file to see which platforms and repos are
+configured. Tell the user what will be fetched (e.g., "Fetching issues and MRs
+from 2 GitLab repos and Jira tickets from AIMT"). Runtime depends entirely on
+how many issues/MRs/tickets exist — it could be minutes or hours for large
+projects. The scripts print progress as they work (pagination counts, save
+progress every 10 items).
 
-# OR fetch individually:
-./tools/fetch-github-history --verbose   # GitHub only
-./tools/fetch-gitlab-history --verbose   # GitLab only
-./tools/fetch-jira-history --verbose     # Jira only
+**How to run**: Run each platform's fetcher **individually** using the
+per-platform scripts — one invocation per repo. Run `--help` on each script
+to see its arguments, then map values from the config file to the correct flags.
+
+```bash
+./tools/fetch-github-history --help   # GitHub
+./tools/fetch-gitlab-history --help   # GitLab
+./tools/fetch-jira-history --help     # Jira
 ```
+
+**Before each fetch**, tell the user what will be fetched. For GitLab and
+GitHub, check total item counts so you can estimate runtime (~1 second per
+item):
+- **GitLab**: `curl -s -I -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "<url>/api/v4/projects/<id>/merge_requests?per_page=1" | grep -i x-total`
+  (same for `/issues`)
+- **GitHub**: The fetcher uses GraphQL which reports totals as it runs.
+- **Jira**: The Jira API does **not** provide total counts upfront. Do not
+  try to get a count — just run the fetch. The script shows progress as it
+  paginates ("Fetched N issues so far").
+
+**Choosing how to run**: The Bash tool has a maximum timeout of 10 minutes.
+Use item counts to decide:
+
+- **Under ~500 items**: Run in the **foreground** with `timeout: 600000`.
+  Progress streams to the user in real-time. Always add `--verbose`.
+- **Over ~500 items**: Run in the **background** with output redirected to a
+  log file. Then periodically (every 1-2 minutes) `tail` the log file and
+  report progress to the user. If the log stops updating for several minutes,
+  something is likely wrong — tell the user and investigate.
+  ```bash
+  ./tools/fetch-gitlab-history --verbose [args...] > /tmp/fetch-reponame.log 2>&1
+  # (run with run_in_background, then periodically:)
+  tail -5 /tmp/fetch-reponame.log
+  ```
 
 This creates:
 - `history/issues/` - GitHub issues organized by state
@@ -68,12 +134,6 @@ This creates:
 - `history/merge-requests/` - GitLab MRs organized by state (opened/closed/merged)
 - `history/jira-issues/` - Jira tickets organized by status
 - `history/metadata*.json` - Summary statistics for each platform
-
-**Expected output**: 
-- Issues: ~100-500 for typical projects
-- PRs/MRs: ~500-5,000 for mature projects
-- Jira tickets: ~50-1,000 depending on usage
-- Time: 5-30 minutes depending on size and platforms
 
 #### Step 2: Generate Analysis Data
 

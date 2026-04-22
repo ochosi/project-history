@@ -71,50 +71,51 @@ The `generate-history-draft` script automatically correlates git commits with re
 
 ### Using with Claude Code
 
-1. **Open your target repository** in Claude Code:
+1. **Copy the scripts into your project**:
    ```bash
    cd /path/to/your-project
-   claude
+   mkdir -p ./tools
+   cp /path/to/project-history/fetch-* \
+      /path/to/project-history/generate-history-draft \
+      /path/to/project-history/setup-project \
+      /path/to/project-history/HISTORY_GENERATION_GUIDE.md \
+      ./tools/
    ```
+   Do **not** copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other
+   repo files — they belong to the project-history repo and will confuse
+   tools if present in your project.
 
-2. **Copy this repository's scripts into your project**:
+2. **Run the interactive setup**:
    ```bash
-   # From Claude Code chat:
-   "Please copy the scripts from /path/to/project-history/ into a tools/ directory in this project"
+   ./tools/setup-project
    ```
-
-3. **Run the interactive setup**:
-   ```bash
-   cd tools
-   ./setup-project
-   ```
-   
-   This will ask about:
+   This creates `.project-history-config.json` in your project root and
+   asks about:
    - Git hosting platform (GitHub, GitLab, or both)
    - Project identifiers (auto-detected from git remote if possible)
    - Jira integration (optional)
 
-4. **Set up your authentication tokens**:
+3. **Set up your authentication tokens**:
    ```bash
-   # For GitHub
-   export GITHUB_TOKEN="your_github_token_here"
-   
-   # For GitLab
-   export GITLAB_TOKEN="your_gitlab_token_here"
-   
-   # For Jira (if enabled)
-   export JIRA_TOKEN="your_jira_token_here"
+   export GITHUB_TOKEN="your_github_token_here"    # If using GitHub
+   export GITLAB_TOKEN="your_gitlab_token_here"    # If using GitLab
+   export JIRA_TOKEN="your_jira_token_here"        # If using Jira
+   export JIRA_EMAIL="your_email@company.com"      # If using Atlassian Cloud
    ```
 
-5. **Start the workflow**:
+4. **Start Claude Code and begin the workflow**:
+   ```bash
+   claude
    ```
-   I want to generate a comprehensive history of this project. 
+   Then give Claude this prompt:
+   ```
+   I want to generate a comprehensive history of this project.
    Please follow the workflow in tools/HISTORY_GENERATION_GUIDE.md.
-   
+
    Start with Phase 1: Data Collection
    ```
 
-6. **Let Claude guide you through each phase**:
+5. **Let Claude guide you through each phase**:
    - Phase 1: Automated data fetching (Claude runs the scripts)
    - Phase 2-5: AI-assisted curation and writing (you collaborate with Claude)
 
@@ -128,9 +129,14 @@ The `generate-history-draft` script automatically correlates git commits with re
 
 2. **Copy the scripts** using Cursor's file explorer or terminal:
    ```bash
-   mkdir tools
-   cp /path/to/project-history/* tools/
+   mkdir -p ./tools
+   cp /path/to/project-history/fetch-* \
+      /path/to/project-history/generate-history-draft \
+      /path/to/project-history/setup-project \
+      /path/to/project-history/HISTORY_GENERATION_GUIDE.md \
+      ./tools/
    ```
+   Do **not** copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other repo files.
 
 3. **Set your GitHub token** in Cursor's terminal:
    ```bash
