@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse
 
+sys.stdout.reconfigure(line_buffering=True)
+
 try:
     import requests
 except ImportError:
@@ -402,7 +404,7 @@ url: {url}
             has_next = page_info["hasNextPage"]
             cursor = page_info["endCursor"]
 
-            self.log(f"Fetched {len(page_issues)} issues (total: {len(issues)})")
+            self.log(f"  Fetched {len(page_issues)} issues (total: {len(issues)})", force=True)
 
         return issues
 
@@ -499,7 +501,7 @@ url: {url}
             has_next = page_info["hasNextPage"]
             cursor = page_info["endCursor"]
 
-            self.log(f"Fetched {len(page_prs)} PRs (total: {len(prs)})")
+            self.log(f"  Fetched {len(page_prs)} PRs (total: {len(prs)})", force=True)
 
         # Filter merged PRs if requested
         if state_filter == "merged":
@@ -510,8 +512,10 @@ url: {url}
     def save_issues(self, issues: List[Dict[str, Any]]):
         """Save issues as markdown files."""
         existing_files = set()
+        total = len(issues)
+        self.log(f"Saving {total} issues...", force=True)
 
-        for issue in issues:
+        for idx, issue in enumerate(issues, 1):
             state = issue["state"].lower()
             state_dir = self.output_dir / "issues" / state
 
@@ -523,12 +527,16 @@ url: {url}
 
             self.stats["issues_fetched"] += 1
             self.log(f"Saved issue #{issue['number']}: {filepath}")
+            if idx % 25 == 0 or idx == total:
+                self.log(f"  Issues: {idx}/{total} saved", force=True)
 
     def save_pull_requests(self, prs: List[Dict[str, Any]]):
         """Save pull requests as markdown files."""
         existing_files = set()
+        total = len(prs)
+        self.log(f"Saving {total} pull requests...", force=True)
 
-        for pr in prs:
+        for idx, pr in enumerate(prs, 1):
             if pr.get("merged"):
                 state = "merged"
             else:
@@ -544,6 +552,8 @@ url: {url}
 
             self.stats["prs_fetched"] += 1
             self.log(f"Saved PR #{pr['number']}: {filepath}")
+            if idx % 25 == 0 or idx == total:
+                self.log(f"  PRs: {idx}/{total} saved", force=True)
 
     def generate_metadata(self, issues: List[Dict[str, Any]], prs: List[Dict[str, Any]]):
         """Generate metadata.json with summary information."""
