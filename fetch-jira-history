@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+sys.stdout.reconfigure(line_buffering=True)
+
 try:
     import requests
 except ImportError:
@@ -429,8 +431,10 @@ url: {url}
     def save_issues(self, issues: List[Dict[str, Any]]):
         """Save issues as markdown files."""
         existing_files = set()
+        total = len(issues)
+        self.log(f"Saving {total} issues (fetching comments for each)...", force=True)
 
-        for issue in issues:
+        for idx, issue in enumerate(issues, 1):
             fields = issue.get("fields", {})
             status = fields.get("status", {}).get("name", "unknown")
             key = issue.get("key", "UNKNOWN")
@@ -451,6 +455,8 @@ url: {url}
 
             self.stats["issues_fetched"] += 1
             self.log(f"Saved issue {key}: {filepath}")
+            if idx % 10 == 0 or idx == total:
+                self.log(f"  Issues: {idx}/{total} saved", force=True)
 
     def save_markdown(self, filepath: Path, content: str):
         """Save markdown content to file."""

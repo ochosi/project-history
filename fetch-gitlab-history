@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, quote
 
+sys.stdout.reconfigure(line_buffering=True)
+
 try:
     import requests
 except ImportError:
@@ -109,7 +111,7 @@ class GitLabHistoryFetcher:
                     # Check if there are more pages
                     if 'x-next-page' in response.headers and response.headers['x-next-page']:
                         page += 1
-                        self.log(f"Fetching page {page}...")
+                        self.log(f"  Fetching page {page} ({len(items)} items so far)...", force=True)
                     else:
                         return items
 
@@ -376,8 +378,10 @@ url: {url}
     def save_issues(self, issues: List[Dict[str, Any]]):
         """Save issues as markdown files."""
         existing_files = set()
+        total = len(issues)
+        self.log(f"Saving {total} issues (fetching notes for each)...", force=True)
 
-        for issue in issues:
+        for idx, issue in enumerate(issues, 1):
             state = issue["state"].lower()
             state_dir = self.output_dir / "issues" / state
 
@@ -392,12 +396,16 @@ url: {url}
 
             self.stats["issues_fetched"] += 1
             self.log(f"Saved issue #{issue['iid']}: {filepath}")
+            if idx % 10 == 0 or idx == total:
+                self.log(f"  Issues: {idx}/{total} saved", force=True)
 
     def save_merge_requests(self, mrs: List[Dict[str, Any]]):
         """Save merge requests as markdown files."""
         existing_files = set()
+        total = len(mrs)
+        self.log(f"Saving {total} merge requests (fetching notes for each)...", force=True)
 
-        for mr in mrs:
+        for idx, mr in enumerate(mrs, 1):
             if mr.get("merged_at"):
                 state = "merged"
             else:
@@ -416,6 +424,8 @@ url: {url}
 
             self.stats["mrs_fetched"] += 1
             self.log(f"Saved MR !{mr['iid']}: {filepath}")
+            if idx % 10 == 0 or idx == total:
+                self.log(f"  MRs: {idx}/{total} saved", force=True)
 
     def generate_metadata(self, issues: List[Dict[str, Any]], mrs: List[Dict[str, Any]]):
         """Generate metadata.json with summary information."""

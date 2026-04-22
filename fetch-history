@@ -144,8 +144,11 @@ def run_command(cmd: List[str], description: str, verbose: bool = False) -> bool
     if verbose and '--verbose' not in cmd:
         cmd.append('--verbose')
 
+    env = os.environ.copy()
+    env['PYTHONUNBUFFERED'] = '1'
+
     try:
-        result = subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True, env=env)
         print_success(f"Completed: {description}")
         return True
     except subprocess.CalledProcessError as e:
@@ -219,6 +222,7 @@ def fetch_jira(jira_config: Dict, output_dir: str, verbose: bool, status_filter:
 
     # Set environment variables for the Jira script
     env = os.environ.copy()
+    env['PYTHONUNBUFFERED'] = '1'
     env['JIRA_URL'] = jira_url
     env['JIRA_PROJECT'] = project_key
 
