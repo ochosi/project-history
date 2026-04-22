@@ -1043,18 +1043,46 @@ Multi-repo mode (via config):
     output_path = Path(args.output)
     repo_path = Path(args.repo)
 
+    # Auto-discover config file if not explicitly provided
+    if not args.config:
+        script_dir = Path(__file__).parent.resolve()
+        candidates = [
+            Path('.project-history-config.json'),
+            script_dir / '.project-history-config.json',
+        ]
+        if script_dir.name == 'tools':
+            candidates.append(script_dir.parent / '.project-history-config.json')
+        for candidate in candidates:
+            if candidate.exists():
+                args.config = str(candidate)
+                break
+
     if args.config:
         config_file = Path(args.config)
         if not config_file.exists():
-            print(f"Error: Configuration file not found: {config_file}", file=sys.stderr)
-            sys.exit(1)
+            script_dir = Path(__file__).parent.resolve()
+            alt = script_dir / config_file.name
+            if alt.exists():
+                config_file = alt
+            elif script_dir.name == 'tools':
+                alt2 = script_dir.parent / config_file.name
+                if alt2.exists():
+                    config_file = alt2
+            if not config_file.exists():
+                print(f"Error: Configuration file not found: {config_file}", file=sys.stderr)
+                sys.exit(1)
 
         with open(config_file, 'r') as f:
             raw_config = json.load(f)
 
         config = normalize_config(raw_config)
         repo_configs = config.get('repos', [])
-        history_path = Path(config.get('output_dir', './history'))
+
+        # Resolve relative paths against config file location, not CWD
+        config_dir = config_file.parent.resolve()
+        for rc in repo_configs:
+            rc['local_path'] = str((config_dir / rc['local_path']).resolve())
+        history_path = (config_dir / config.get('output_dir', './history')).resolve()
         output_path = history_path / 'draft'
 
         if not repo_configs:
