@@ -135,7 +135,36 @@ This creates:
 - `history/jira-issues/` - Jira tickets organized by status
 - `history/metadata*.json` - Summary statistics for each platform
 
-#### Step 2: Generate Analysis Data
+#### Step 2: Discover Project Profile and Generate Analysis Data
+
+**Step 2a: Auto-discover themes and periods**
+
+```bash
+# Analyze git history to discover project-specific themes and time periods
+./tools/generate-history-draft --discover --verbose
+```
+
+This analyzes commit messages and date patterns to create
+`.history-analysis-config.json` with:
+- **Themes**: Project-specific topic categories discovered from commit keywords
+- **Periods**: Time eras based on commit activity patterns and natural breakpoints
+- **Importance keywords**: Terms that indicate architecturally significant changes
+
+After running, read the generated `.history-analysis-config.json` and present
+a summary to the user:
+- Proposed periods with date ranges and descriptions
+- Proposed themes with keywords
+
+Tell the user the config file location and ask if they want to proceed or
+make changes first. The user may want to:
+- Rename generic period names (e.g., `period-1` → `origins`)
+- Add more descriptive period descriptions
+- Add or remove themes
+- Adjust theme keywords
+
+**Step 2b: Generate analysis data**
+
+Once the user confirms the analysis config:
 
 ```bash
 # Generate correlation and timeline data
@@ -149,15 +178,6 @@ This creates:
 - `history/draft/data/jira_references.json` - Referenced Jira tickets
 - `history/draft/data/theme_analysis.json` - Categorized changes
 - `history/draft/timeline/*.md` - Timeline files by period
-
-**Note**: The script uses predefined time periods. Edit `generate-history-draft` to customize:
-```python
-PERIODS = {
-    'early': {'start': '2019-01-01', 'end': '2020-12-31'},
-    'growth': {'start': '2021-01-01', 'end': '2022-12-31'},
-    # ... customize for your project
-}
-```
 
 ### Phase 2: Curation (Days 2-3)
 
@@ -442,61 +462,63 @@ Update all files in place.
 
 ## Customization
 
-### Adjusting Time Periods
+### Analysis Configuration
 
-Edit `generate-history-draft` line 406-437 to match your project:
+Run `--discover` to auto-generate `.history-analysis-config.json`, then edit
+the file to customize themes, periods, and importance keywords for your project.
 
-```python
-PERIODS = {
-    'bootstrap': {
-        'start': '2015-01-01',
-        'end': '2016-12-31',
-        'description': 'Initial development'
+```json
+{
+  "themes": {
+    "architecture": {
+      "keywords": ["pipeline", "manifest", "format", "schema", "architecture"],
+      "description": "Core architectural changes"
     },
-    'production': {
-        'start': '2017-01-01', 
-        'end': '2019-12-31',
-        'description': 'First production users'
+    "isolation": {
+      "keywords": ["nspawn", "bubblewrap", "container", "sandbox", "isolation"],
+      "description": "Build isolation and containerization"
+    }
+  },
+  "periods": {
+    "genesis": {
+      "start": "2019-01-01",
+      "end": "2019-06-30",
+      "description": "Initial prototype and core architecture"
     },
-    # Add more periods as needed
+    "foundation": {
+      "start": "2019-07-01",
+      "end": "2020-12-31",
+      "description": "Manifest format, schema, and first production use"
+    },
+    "current": {
+      "start": "2024-01-01",
+      "end": "2030-12-31",
+      "description": "Current development"
+    }
+  },
+  "importance": {
+    "architectural_keywords": ["manifest", "pipeline", "schema", "nspawn"],
+    "title_keywords": ["migration", "breaking", "redesign", "rewrite"]
+  }
 }
 ```
 
-### Adjusting Theme Detection
+#### Themes
+Each theme has a name, a list of keywords to match in commit messages, and a
+description. The `--discover` flag suggests themes from keyword frequency
+analysis. Add domain-specific themes your project needs.
 
-Edit `generate-history-draft` line 260-301 to match your project's themes:
+#### Periods
+Each period has a name, start/end dates, and a description. The `--discover`
+flag detects natural breakpoints from commit activity patterns. Rename the
+generic `period-N` names to meaningful era names for your project.
 
-```python
-THEMES = {
-    'api': {
-        'keywords': ['api', 'endpoint', 'rest', 'graphql'],
-        'description': 'API changes'
-    },
-    'database': {
-        'keywords': ['migration', 'schema', 'sql', 'database'],
-        'description': 'Database layer'
-    },
-    # Add themes relevant to your project
-}
-```
-
-### Adjusting Importance Scoring
-
-Edit `generate-history-draft` line 318-400 to tune what counts as "important":
-
-```python
-def score_pr(self, pr_data: Dict[str, Any]) -> int:
-    score = 0
-    
-    # Customize these weights for your project
-    if 'breaking-change' in labels:
-        score += 20
-    if 'rfc' in labels:
-        score += 15
-    # Add your own scoring criteria
-    
-    return min(score, 100)
-```
+#### Importance Keywords
+Two keyword lists control how commits and PRs are scored:
+- `architectural_keywords`: Terms in commit messages that indicate significant
+  architectural changes (get a +5 score bonus)
+- `title_keywords`: Terms in PR/MR titles that indicate important changes
+  (get a +10 score bonus)
 
 ## Output Structure
 

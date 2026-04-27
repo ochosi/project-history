@@ -21,7 +21,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 
@@ -467,55 +467,49 @@ class IssueCorrelator:
 class ThemeDetector:
     """Detects themes and categorizes changes."""
 
-    THEMES = {
-        'architecture': {
-            'keywords': ['pipeline', 'manifest', 'format', 'schema', 'architecture', 'object store', 'content store'],
-            'description': 'Core architectural changes'
-        },
-        'isolation': {
-            'keywords': ['nspawn', 'bubblewrap', 'bwrap', 'vm', 'container', 'sandbox', 'isolation', 'chroot'],
-            'description': 'Build isolation and containerization'
-        },
-        'stages': {
-            'keywords': ['stage:', 'org.osbuild.', 'new stage'],
-            'description': 'Build stage additions and modifications'
-        },
-        'assemblers': {
-            'keywords': ['assembler', 'qcow2', 'raw', 'tar', 'ostree'],
-            'description': 'Output assembler changes'
-        },
-        'sources': {
-            'keywords': ['source:', 'curl', 'org.osbuild.files', 'download'],
-            'description': 'Input source handling'
+    DEFAULT_THEMES = {
+        'testing': {
+            'keywords': ['test:', 'ci:', 'pytest', 'unittest', 'coverage', 'test'],
+            'description': 'Testing and CI infrastructure'
         },
         'performance': {
             'keywords': ['perf', 'cache', 'optimization', 'speed', 'fast', 'parallel'],
             'description': 'Performance improvements'
         },
-        'testing': {
-            'keywords': ['test:', 'ci:', 'pytest', 'unittest', 'coverage'],
-            'description': 'Testing and CI infrastructure'
+        'security': {
+            'keywords': ['security', 'selinux', 'permission', 'capability'],
+            'description': 'Security and permissions'
         },
-        'dnf': {
-            'keywords': ['dnf', 'rpm', 'package', 'depsolve', 'dependency'],
-            'description': 'Package management and DNF integration'
+        'documentation': {
+            'keywords': ['docs:', 'documentation', 'readme', 'guide', 'manual'],
+            'description': 'Documentation changes'
         },
         'api': {
             'keywords': ['api:', 'interface', 'cli', 'command'],
             'description': 'API and command-line interface'
         },
-        'security': {
-            'keywords': ['security', 'selinux', 'permission', 'capability'],
-            'description': 'Security and permissions'
+        'build': {
+            'keywords': ['build', 'compile', 'makefile', 'cmake', 'configure'],
+            'description': 'Build system changes'
         }
     }
+
+    def __init__(self, themes: Optional[Dict[str, Dict[str, Any]]] = None):
+        """
+        Initialize the theme detector.
+
+        Args:
+            themes: Optional dictionary of theme definitions. If None, uses DEFAULT_THEMES.
+                   Each theme should have 'keywords' and 'description' keys.
+        """
+        self.themes = themes if themes is not None else self.DEFAULT_THEMES
 
     def detect_themes(self, message: str) -> Set[str]:
         """Detect themes in a commit message."""
         msg_lower = message.lower()
         themes = set()
 
-        for theme, config in self.THEMES.items():
+        for theme, config in self.themes.items():
             for keyword in config['keywords']:
                 if keyword in msg_lower:
                     themes.add(theme)
@@ -527,8 +521,15 @@ class ThemeDetector:
 class ImportanceScorer:
     """Scores the importance of commits and PRs."""
 
-    def __init__(self, verbose: bool = False):
+    DEFAULT_ARCH_KEYWORDS = ['architecture', 'redesign', 'rewrite', 'migration', 'breaking']
+    DEFAULT_TITLE_KEYWORDS = ['breaking', 'migration', 'redesign', 'rewrite', 'rfc']
+
+    def __init__(self, verbose: bool = False,
+                 architectural_keywords: Optional[List[str]] = None,
+                 title_keywords: Optional[List[str]] = None):
         self.verbose = verbose
+        self.architectural_keywords = architectural_keywords if architectural_keywords is not None else self.DEFAULT_ARCH_KEYWORDS
+        self.title_keywords = title_keywords if title_keywords is not None else self.DEFAULT_TITLE_KEYWORDS
 
     def score_commit(self, commit: Dict[str, Any], pr_data: Optional[Dict[str, Any]] = None) -> int:
         """Score a commit's importance (0-100)."""
@@ -549,8 +550,7 @@ class ImportanceScorer:
                 score += 3
 
         # Architectural keywords
-        arch_keywords = ['format', 'schema', 'manifest', 'architecture', 'design']
-        for keyword in arch_keywords:
+        for keyword in self.architectural_keywords:
             if keyword in msg_lower:
                 score += 5
 
@@ -604,51 +604,332 @@ class ImportanceScorer:
 
         # Title keywords
         title = pr_data.get('title', '').lower()
-        if any(kw in title for kw in ['format', 'schema', 'manifest', 'breaking']):
+        if any(kw in title for kw in self.title_keywords):
             score += 10
 
         return min(score, 100)
 
 
+class DiscoveryAnalyzer:
+    """Analyzes git history to auto-discover themes, periods, and importance keywords."""
+
+    NOISE_WORDS = {
+        'fix', 'add', 'remove', 'update', 'merge', 'revert', 'bump', 'move',
+        'rename', 'change', 'set', 'use', 'make', 'get', 'new', 'old',
+        'the', 'and', 'for', 'from', 'with', 'this', 'that', 'not', 'but',
+        'all', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will',
+        'can', 'may', 'should', 'would', 'could', 'does', 'did', 'into',
+        'also', 'when', 'then', 'than', 'more', 'some', 'only', 'just',
+        'now', 'here', 'there', 'where', 'which', 'what', 'how', 'who',
+        'each', 'every', 'both', 'few', 'many', 'much', 'most', 'other',
+        'about', 'after', 'before', 'between', 'over', 'under', 'again',
+        'out', 'off', 'down', 'well', 'back', 'still', 'even', 'too',
+        'bug', 'issue', 'patch', 'commit', 'branch', 'main', 'master',
+        'head', 'base', 'pull', 'request', 'push', 'code', 'file', 'line',
+        'src', 'lib', 'bin', 'var', 'tmp', 'etc', 'run', 'work', 'need',
+        'see', 'try', 'let', 'put', 'take', 'give', 'keep', 'call',
+        'instead', 'since', 'because', 'while', 'during', 'until', 'unless',
+        'already', 'currently', 'properly', 'correctly', 'actually',
+        'support', 'ensure', 'allow', 'avoid', 'handle', 'check', 'clean',
+        'minor', 'small', 'simple', 'proper', 'correct', 'related',
+        'using', 'added', 'fixed', 'updated', 'removed', 'changed',
+        'don', 'doesn', 'didn', 'won', 'isn', 'aren', 'wasn', 'weren',
+        'shouldn', 'couldn', 'wouldn',
+    }
+
+    def __init__(self, commits: List[Dict[str, Any]],
+                 pr_data: Optional[Dict] = None,
+                 mr_data: Optional[Dict] = None,
+                 verbose: bool = False):
+        self.commits = commits
+        self.pr_data = pr_data or {}
+        self.mr_data = mr_data or {}
+        self.verbose = verbose
+
+    def log(self, message: str):
+        if self.verbose:
+            print(message)
+
+    def _tokenize(self, text: str) -> List[str]:
+        """Tokenize text into lowercase words, filtering noise and short words."""
+        words = re.findall(r'[a-z][a-z0-9_-]*[a-z0-9]|[a-z]', text.lower())
+        return [w for w in words if w not in self.NOISE_WORDS and len(w) >= 3]
+
+    def discover_themes(self, max_themes: int = 12) -> Dict[str, Dict[str, Any]]:
+        """Discover themes from commit message keyword frequency and co-occurrence."""
+        self.log("Analyzing commit messages for themes...")
+
+        word_freq: Dict[str, int] = defaultdict(int)
+        word_commits: Dict[str, Set[int]] = defaultdict(set)
+
+        for i, commit in enumerate(self.commits):
+            tokens = self._tokenize(commit['message'])
+            seen = set()
+            for token in tokens:
+                if token not in seen:
+                    word_freq[token] += 1
+                    word_commits[token].add(i)
+                    seen.add(token)
+
+        if not word_freq:
+            return {}
+
+        min_count = max(3, len(self.commits) // 200)
+        frequent = {w: c for w, c in word_freq.items() if c >= min_count}
+
+        if not frequent:
+            return {}
+
+        ranked = sorted(frequent.items(), key=lambda x: -x[1])
+
+        groups: List[Dict[str, Any]] = []
+        used_words: Set[str] = set()
+
+        for word, count in ranked:
+            if word in used_words:
+                continue
+
+            group_words = [word]
+            group_commits = word_commits[word].copy()
+            used_words.add(word)
+
+            for other_word, other_count in ranked:
+                if other_word in used_words:
+                    continue
+                overlap = len(group_commits & word_commits[other_word])
+                if overlap >= 0.3 * min(len(group_commits), len(word_commits[other_word])):
+                    group_words.append(other_word)
+                    group_commits |= word_commits[other_word]
+                    used_words.add(other_word)
+
+            groups.append({
+                'words': group_words,
+                'commit_count': len(group_commits)
+            })
+
+        groups.sort(key=lambda g: -g['commit_count'])
+        top_groups = groups[:max_themes]
+
+        themes = {}
+        for group in top_groups:
+            name = group['words'][0]
+            themes[name] = {
+                'keywords': group['words'][:8],
+                'description': f"Changes related to {', '.join(group['words'][:3])}"
+            }
+
+        self.log(f"Discovered {len(themes)} themes")
+        return themes
+
+    def discover_periods(self, min_periods: int = 3, max_periods: int = 7) -> Dict[str, Dict[str, Any]]:
+        """Discover time periods by analyzing commit date distribution."""
+        self.log("Analyzing commit dates for period boundaries...")
+
+        dated_commits = [c for c in self.commits if c.get('date') is not None]
+        if len(dated_commits) < 2:
+            return {
+                'all': {
+                    'start': '2000-01-01',
+                    'end': '2030-12-31',
+                    'description': 'All project history'
+                }
+            }
+
+        dated_commits.sort(key=lambda c: c['date'])
+        first_date = dated_commits[0]['date']
+        last_date = dated_commits[-1]['date']
+
+        # Build monthly commit histogram
+        monthly: Dict[str, int] = defaultdict(int)
+        for commit in dated_commits:
+            month_key = commit['date'].strftime('%Y-%m')
+            monthly[month_key] += 1
+
+        # Generate all months in range
+        all_months = []
+        current = first_date.replace(day=1)
+        end_month = last_date.replace(day=1)
+        while current <= end_month:
+            key = current.strftime('%Y-%m')
+            all_months.append((key, monthly.get(key, 0)))
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
+            else:
+                current = current.replace(month=current.month + 1)
+
+        if len(all_months) < 2:
+            return {
+                'all': {
+                    'start': first_date.strftime('%Y-%m-%d'),
+                    'end': '2030-12-31',
+                    'description': 'All project history'
+                }
+            }
+
+        # Find breakpoints: gaps and rate changes
+        breakpoints = []
+        counts = [m[1] for m in all_months]
+
+        # Detect gaps (consecutive months with zero commits)
+        gap_start = None
+        for i, (month, count) in enumerate(all_months):
+            if count == 0:
+                if gap_start is None:
+                    gap_start = i
+            else:
+                if gap_start is not None:
+                    gap_len = i - gap_start
+                    if gap_len >= 3:
+                        breakpoints.append((i, gap_len * 10))
+                    gap_start = None
+
+        # Detect rate changes using sliding window comparison
+        window = max(3, len(all_months) // 20)
+        for i in range(window, len(all_months) - window):
+            before = sum(counts[i - window:i]) / window
+            after = sum(counts[i:i + window]) / window
+            if before > 0 and after > 0:
+                ratio = max(after / before, before / after)
+                if ratio >= 2.0:
+                    breakpoints.append((i, ratio * 5))
+
+        # Sort by score and select top breakpoints
+        breakpoints.sort(key=lambda x: -x[1])
+
+        # Deduplicate nearby breakpoints (within 6 months)
+        selected = []
+        for bp_idx, bp_score in breakpoints:
+            if not any(abs(bp_idx - s) < 6 for s in selected):
+                selected.append(bp_idx)
+            if len(selected) >= max_periods - 1:
+                break
+
+        # If we don't have enough breakpoints, add evenly spaced ones
+        while len(selected) < min_periods - 1:
+            segment_len = len(all_months) // (len(selected) + 2)
+            for i in range(1, len(selected) + 2):
+                candidate = i * segment_len
+                if candidate < len(all_months) and not any(abs(candidate - s) < 6 for s in selected):
+                    selected.append(candidate)
+                    break
+            else:
+                break
+
+        selected.sort()
+
+        # Build periods from breakpoints
+        periods = {}
+        boundaries = [0] + selected + [len(all_months)]
+
+        for i in range(len(boundaries) - 1):
+            start_idx = boundaries[i]
+            end_idx = boundaries[i + 1] - 1
+            if end_idx < start_idx:
+                end_idx = start_idx
+
+            start_month = all_months[start_idx][0]
+            end_month_key = all_months[min(end_idx, len(all_months) - 1)][0]
+
+            start_date = f"{start_month}-01"
+            # End date: last day of end month
+            end_year, end_mon = end_month_key.split('-')
+            if int(end_mon) == 12:
+                end_date = f"{end_year}-12-31"
+            else:
+                next_month = datetime(int(end_year), int(end_mon) + 1, 1, tzinfo=timezone.utc)
+                last_day = next_month - timedelta(days=1)
+                end_date = last_day.strftime('%Y-%m-%d')
+
+            commit_count = sum(
+                all_months[j][1] for j in range(start_idx, min(end_idx + 1, len(all_months)))
+            )
+
+            name = f"period-{i + 1}"
+            periods[name] = {
+                'start': start_date,
+                'end': end_date,
+                'description': f"{commit_count} commits from {start_date} to {end_date}"
+            }
+
+        # Extend final period to future
+        if periods:
+            last_name = list(periods.keys())[-1]
+            periods[last_name]['end'] = '2030-12-31'
+
+        self.log(f"Discovered {len(periods)} periods")
+        return periods
+
+    def discover_importance_keywords(
+        self,
+        themes: Dict[str, Dict[str, Any]],
+        max_keywords: int = 12
+    ) -> Dict[str, List[str]]:
+        """Discover importance keywords from themes and PR/MR data."""
+        self.log("Discovering importance keywords...")
+
+        # Collect top keywords from themes (most project-specific)
+        arch_keywords = []
+        for theme_data in themes.values():
+            arch_keywords.extend(theme_data['keywords'][:2])
+
+        # Add generic architectural terms that are always relevant
+        generic_arch = ['architecture', 'redesign', 'rewrite', 'migration', 'breaking']
+        for term in generic_arch:
+            if term not in arch_keywords:
+                arch_keywords.append(term)
+
+        arch_keywords = arch_keywords[:max_keywords]
+
+        # Title keywords from PR/MR titles of significant items
+        title_keywords = []
+        all_items = list(self.pr_data.values()) + list(self.mr_data.values())
+        significant_items = [
+            item for item in all_items
+            if len(item.get('body', '')) > 1000 or item.get('body', '').count('###') >= 3
+        ]
+
+        if significant_items:
+            title_word_freq: Dict[str, int] = defaultdict(int)
+            for item in significant_items:
+                tokens = self._tokenize(item.get('title', ''))
+                for token in tokens:
+                    title_word_freq[token] += 1
+
+            ranked = sorted(title_word_freq.items(), key=lambda x: -x[1])
+            title_keywords = [w for w, _ in ranked[:max_keywords]]
+
+        # Fall back to generic + theme-derived if no PR/MR data
+        if not title_keywords:
+            title_keywords = ['breaking', 'migration', 'redesign', 'rewrite', 'rfc']
+            for kw in arch_keywords[:5]:
+                if kw not in title_keywords:
+                    title_keywords.append(kw)
+            title_keywords = title_keywords[:max_keywords]
+
+        return {
+            'architectural_keywords': arch_keywords,
+            'title_keywords': title_keywords
+        }
+
+
 class HistoryGenerator:
     """Main history generation coordinator."""
 
-    PERIODS = {
-        'genesis': {
-            'start': '2019-01-01',
-            'end': '2019-06-30',
-            'description': 'Initial prototype and core architecture'
-        },
-        'foundation': {
-            'start': '2019-07-01',
-            'end': '2020-12-31',
-            'description': 'Manifest format, schema, and first production use'
-        },
-        'maturation': {
-            'start': '2021-01-01',
-            'end': '2022-12-31',
-            'description': 'Stabilization and expanded capabilities'
-        },
-        'production-scale': {
-            'start': '2023-01-01',
-            'end': '2023-12-31',
-            'description': 'RHEL integration and performance optimization'
-        },
-        'modern-features': {
-            'start': '2024-01-01',
-            'end': '2025-12-31',
-            'description': 'VM support, DNF5, and advanced isolation'
-        },
-        'current': {
-            'start': '2026-01-01',
-            'end': '2030-12-31',
-            'description': 'Current development'
-        }
+    DEFAULT_PERIODS = {
+        'period-1': {'start': '2000-01-01', 'end': '2005-12-31', 'description': 'Period 1'},
+        'period-2': {'start': '2006-01-01', 'end': '2010-12-31', 'description': 'Period 2'},
+        'period-3': {'start': '2011-01-01', 'end': '2015-12-31', 'description': 'Period 3'},
+        'period-4': {'start': '2016-01-01', 'end': '2020-12-31', 'description': 'Period 4'},
+        'period-5': {'start': '2021-01-01', 'end': '2030-12-31', 'description': 'Period 5'},
     }
 
     def __init__(self, repo_path: Path, history_path: Path, output_path: Path,
                  verbose: bool = False, resume: bool = True,
-                 repo_configs: Optional[List[Dict[str, Any]]] = None):
+                 repo_configs: Optional[List[Dict[str, Any]]] = None,
+                 themes: Optional[Dict[str, Dict[str, Any]]] = None,
+                 periods: Optional[Dict[str, Dict[str, Any]]] = None,
+                 architectural_keywords: Optional[List[str]] = None,
+                 title_keywords: Optional[List[str]] = None):
         """
         Initialize the history generator.
 
@@ -661,15 +942,20 @@ class HistoryGenerator:
             repo_configs: For multi-repo mode, list of repo config dicts with
                           keys: name, local_path, platform. When set, repo_path
                           is ignored and commits are merged from all repos.
+            themes: Optional dictionary of theme definitions for ThemeDetector
+            periods: Optional dictionary of period definitions
+            architectural_keywords: Optional list of architectural keywords for scoring
+            title_keywords: Optional list of title keywords for PR scoring
         """
         self.history_path = history_path
         self.output_path = output_path
         self.verbose = verbose
         self.repo_configs = repo_configs
+        self.periods = periods if periods is not None else self.DEFAULT_PERIODS
 
         self.state = StateManager(output_path / '.history-gen-state.json')
-        self.theme_detector = ThemeDetector()
-        self.scorer = ImportanceScorer(verbose)
+        self.theme_detector = ThemeDetector(themes=themes)
+        self.scorer = ImportanceScorer(verbose, architectural_keywords=architectural_keywords, title_keywords=title_keywords)
 
         if repo_configs and len(repo_configs) > 1:
             self.repo_path = None
@@ -762,7 +1048,7 @@ class HistoryGenerator:
         for commit in self.commits:
             commit_date = commit['date']
 
-            for period_name, period_config in self.PERIODS.items():
+            for period_name, period_config in self.periods.items():
                 start = datetime.fromisoformat(period_config['start']).replace(tzinfo=timezone.utc)
                 end = datetime.fromisoformat(period_config['end']).replace(tzinfo=timezone.utc)
 
@@ -776,7 +1062,7 @@ class HistoryGenerator:
         """Generate timeline markdown for a period."""
         self.log(f"Generating timeline for {period_name}...")
 
-        period_config = self.PERIODS[period_name]
+        period_config = self.periods[period_name]
 
         output = [f"# {period_name.replace('-', ' ').title()} Timeline"]
         output.append(f"\n**Period**: {period_config['start']} to {period_config['end']}")
@@ -864,7 +1150,7 @@ class HistoryGenerator:
 
         grouped = self.group_commits_by_period()
 
-        for period_name in self.PERIODS.keys():
+        for period_name in self.periods.keys():
             if period_name in self.state.state['timelines_generated']:
                 self.log(f"Skipping {period_name} (already generated)")
                 continue
@@ -984,6 +1270,29 @@ class HistoryGenerator:
         self.log(f"State saved to {self.state.state_file}", force=True)
 
 
+ANALYSIS_CONFIG_FILENAME = '.history-analysis-config.json'
+
+
+def load_analysis_config(search_dir: Path) -> Optional[Dict[str, Any]]:
+    """Load analysis config from .history-analysis-config.json."""
+    config_path = search_dir / ANALYSIS_CONFIG_FILENAME
+    if not config_path.exists():
+        return None
+
+    with open(config_path, 'r') as f:
+        raw = json.load(f)
+
+    result = {}
+    if 'themes' in raw:
+        result['themes'] = raw['themes']
+    if 'periods' in raw:
+        result['periods'] = raw['periods']
+    if 'importance' in raw:
+        result['importance'] = raw['importance']
+
+    return result if result else None
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1034,6 +1343,11 @@ Multi-repo mode (via config):
         '--verbose',
         action='store_true',
         help='Verbose output'
+    )
+    parser.add_argument(
+        '--discover',
+        action='store_true',
+        help='Analyze git history to auto-generate .history-analysis-config.json and exit'
     )
 
     args = parser.parse_args()
@@ -1093,6 +1407,117 @@ Multi-repo mode (via config):
             repo_path = Path(repo_configs[0]['local_path'])
             repo_configs = None
 
+    # Determine where to look for analysis config
+    if args.config:
+        analysis_config_dir = config_file.parent.resolve()
+    else:
+        script_dir = Path(__file__).parent.resolve()
+        analysis_config_dir = None
+        for candidate_dir in [Path('.').resolve(), script_dir]:
+            if (candidate_dir / ANALYSIS_CONFIG_FILENAME).exists():
+                analysis_config_dir = candidate_dir
+                break
+        if analysis_config_dir is None and script_dir.name == 'tools':
+            parent = script_dir.parent
+            if (parent / ANALYSIS_CONFIG_FILENAME).exists():
+                analysis_config_dir = parent
+        if analysis_config_dir is None:
+            analysis_config_dir = Path('.').resolve()
+
+    # Load analysis config if it exists
+    analysis_config = load_analysis_config(analysis_config_dir)
+    themes = None
+    periods = None
+    architectural_keywords = None
+    title_keywords = None
+
+    if analysis_config:
+        themes = analysis_config.get('themes')
+        periods = analysis_config.get('periods')
+        importance = analysis_config.get('importance', {})
+        architectural_keywords = importance.get('architectural_keywords')
+        title_keywords = importance.get('title_keywords')
+
+    if args.discover:
+        try:
+            # Collect commits from all configured repos
+            if repo_configs:
+                commits = []
+                for rc in repo_configs:
+                    git = GitAnalyzer(Path(rc['local_path']), args.verbose, repo_name=rc['name'])
+                    commits.extend(git.get_all_commits())
+                commits.sort(key=lambda c: c['date'])
+            else:
+                git = GitAnalyzer(repo_path, args.verbose)
+                commits = git.get_all_commits()
+
+            # Load PR/MR data for importance keyword discovery
+            pr_data = {}
+            mr_data = {}
+            if repo_configs:
+                repo_data_paths = {
+                    rc['name']: history_path / "repos" / rc['name']
+                    for rc in repo_configs
+                }
+                correlator = IssueCorrelator(history_path, args.verbose, repo_data_paths=repo_data_paths)
+                for prs in correlator.all_github_prs().values():
+                    pr_data.update(prs)
+                for mrs in correlator.all_gitlab_mrs().values():
+                    mr_data.update(mrs)
+            else:
+                correlator = IssueCorrelator(history_path, args.verbose)
+                pr_data = correlator.github_prs
+                mr_data = correlator.gitlab_mrs
+
+            analyzer = DiscoveryAnalyzer(
+                commits, pr_data=pr_data, mr_data=mr_data, verbose=args.verbose
+            )
+
+            themes = analyzer.discover_themes()
+            periods = analyzer.discover_periods()
+            importance = analyzer.discover_importance_keywords(themes)
+
+            config_out = {
+                'themes': themes,
+                'periods': periods,
+                'importance': importance
+            }
+
+            config_path = analysis_config_dir / ANALYSIS_CONFIG_FILENAME
+            if config_path.exists():
+                print(f"Warning: Overwriting existing {config_path}", file=sys.stderr)
+
+            with open(config_path, 'w') as f:
+                json.dump(config_out, f, indent=2)
+
+            # Print summary
+            print(f"\n=== Discovery Complete ===")
+            print(f"Analyzed {len(commits)} commits\n")
+
+            print(f"Themes ({len(themes)}):")
+            for name, data in themes.items():
+                kw_list = ', '.join(data['keywords'][:5])
+                print(f"  {name}: {data['description']} [{kw_list}]")
+
+            print(f"\nPeriods ({len(periods)}):")
+            for name, data in periods.items():
+                print(f"  {name}: {data['start']} to {data['end']} — {data['description']}")
+
+            print(f"\nImportance keywords:")
+            print(f"  Architectural: {', '.join(importance['architectural_keywords'])}")
+            print(f"  Title: {', '.join(importance['title_keywords'])}")
+
+            print(f"\nConfig written to: {config_path}")
+            print(f"Review and customize before running: generate-history-draft --verbose")
+
+        except Exception as e:
+            print(f"Error during discovery: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+        sys.exit(0)
+
     try:
         generator = HistoryGenerator(
             repo_path=repo_path,
@@ -1100,7 +1525,11 @@ Multi-repo mode (via config):
             output_path=output_path,
             verbose=args.verbose,
             resume=not args.no_resume,
-            repo_configs=repo_configs
+            repo_configs=repo_configs,
+            themes=themes,
+            periods=periods,
+            architectural_keywords=architectural_keywords,
+            title_keywords=title_keywords
         )
         generator.run(phase=args.phase)
     except KeyboardInterrupt:
