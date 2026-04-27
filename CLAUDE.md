@@ -47,12 +47,19 @@ When a user opens this repository in Claude Code, they are likely trying to:
    ./fetch-history
    ```
 
-2. Generate timeline and analysis:
+2. Discover project-specific themes and time periods:
+   ```bash
+   ./generate-history-draft --discover --verbose
+   ```
+   This creates `.history-analysis-config.json` with auto-discovered themes,
+   periods, and importance keywords. Review and customize before proceeding.
+
+3. Generate timeline and analysis:
    ```bash
    ./generate-history-draft
    ```
 
-3. Follow the AI-assisted curation workflow in `HISTORY_GENERATION_GUIDE.md`
+4. Follow the AI-assisted curation workflow in `HISTORY_GENERATION_GUIDE.md`
 
 ## Configuration
 
