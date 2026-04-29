@@ -290,12 +290,21 @@ def configure_jira() -> Dict:
         return {'enabled': False}
 
     jira_url = get_input("Jira URL (e.g., 'https://mycompany.atlassian.net')")
-    project_key = get_input("Jira project key (e.g., 'PROJ')")
+
+    projects = []
+    while True:
+        project_key = get_input("Jira project key (e.g., 'PROJ')")
+        projects.append({'project_key': project_key.strip().upper()})
+
+        if not get_yes_no("Add another Jira project?", default=False):
+            break
+
+    print_info("JQL filters can be configured later during the history generation workflow")
 
     return {
         'enabled': True,
         'url': jira_url.strip().rstrip('/'),
-        'project_key': project_key.strip().upper()
+        'projects': projects
     }
 
 
