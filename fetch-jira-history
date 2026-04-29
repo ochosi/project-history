@@ -380,12 +380,14 @@ url: {url}
 
         return items
 
-    def fetch_issues(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    def fetch_issues(self, status_filter: Optional[str] = None,
+                     extra_jql: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Fetch all issues for the project.
 
         Args:
             status_filter: Filter by status (e.g., 'Open', 'Closed', 'Done')
+            extra_jql: Additional JQL clause to append (e.g., 'component = MyComponent')
 
         Returns:
             List of issue data
@@ -396,8 +398,11 @@ url: {url}
         jql = f"project = {self.project_key}"
         if status_filter:
             jql += f" AND status = '{status_filter}'"
+        if extra_jql:
+            jql += f" AND {extra_jql}"
 
         jql += " ORDER BY created ASC"
+        self.log(f"JQL: {jql}", force=True)
 
         issues = []
         next_page_token = None
@@ -489,18 +494,19 @@ url: {url}
 
         self.log(f"Generated metadata: {metadata_path}", force=True)
 
-    def run(self, status_filter: Optional[str] = None):
+    def run(self, status_filter: Optional[str] = None, extra_jql: Optional[str] = None):
         """
         Run the fetcher.
 
         Args:
             status_filter: Optional status filter
+            extra_jql: Additional JQL clause to append
         """
         self.log(f"Fetching from Jira project: {self.project_key}", force=True)
         self.log(f"Jira URL: {self.jira_url}", force=True)
         self.log(f"Output directory: {self.output_dir}", force=True)
 
-        issues = self.fetch_issues(status_filter)
+        issues = self.fetch_issues(status_filter, extra_jql=extra_jql)
         self.save_issues(issues)
         self.generate_metadata(issues)
 
@@ -554,6 +560,10 @@ Environment variables:
         help="Filter by status (e.g., 'Open', 'Closed', 'Done')"
     )
     parser.add_argument(
+        "--jql",
+        help="Additional JQL filter clause to append (e.g., 'component = MyComponent')"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be fetched without creating files"
@@ -592,6 +602,8 @@ Environment variables:
         print(f"  Jira URL: {jira_url}")
         print(f"  Output directory: {args.output}")
         print(f"  Status filter: {args.status or 'all'}")
+        if args.jql:
+            print(f"  JQL filter: {args.jql}")
         sys.exit(0)
 
     # Run fetcher
@@ -604,7 +616,7 @@ Environment variables:
             verbose=args.verbose,
             email=email
         )
-        fetcher.run(status_filter=args.status)
+        fetcher.run(status_filter=args.status, extra_jql=args.jql)
     except KeyboardInterrupt:
         print("\nInterrupted by user", file=sys.stderr)
         sys.exit(130)
