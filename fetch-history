@@ -67,6 +67,30 @@ def load_config(config_file: Path) -> Dict:
         return json.load(f)
 
 
+def _normalize_jira_config(jira_config: Dict) -> Dict:
+    """
+    Normalize Jira config to the multi-project format.
+
+    Accepts both old format (single project_key string) and new format
+    (projects array). Returns config with a 'projects' array.
+    """
+    if not jira_config.get('enabled', False):
+        return jira_config
+
+    if 'projects' in jira_config:
+        return jira_config
+
+    if 'project_key' in jira_config:
+        project_key = jira_config['project_key']
+        return {
+            'enabled': True,
+            'url': jira_config.get('url', ''),
+            'projects': [{'project_key': project_key}],
+        }
+
+    return jira_config
+
+
 def normalize_config(config: Dict) -> Dict:
     """
     Normalize configuration to a uniform multi-repo format.
@@ -78,6 +102,10 @@ def normalize_config(config: Dict) -> Dict:
         Dict with 'repos' list, 'platforms' (jira only), and 'output_dir'
     """
     if 'repos' in config:
+        config = dict(config)
+        jira = config.get('platforms', {}).get('jira', {'enabled': False})
+        config['platforms'] = dict(config.get('platforms', {}))
+        config['platforms']['jira'] = _normalize_jira_config(jira)
         return config
 
     repos = []
@@ -106,7 +134,7 @@ def normalize_config(config: Dict) -> Dict:
 
     return {
         'repos': repos,
-        'platforms': {'jira': platforms.get('jira', {'enabled': False})},
+        'platforms': {'jira': _normalize_jira_config(platforms.get('jira', {'enabled': False}))},
         'output_dir': config.get('output_dir', './history'),
     }
 
@@ -213,46 +241,55 @@ def fetch_repo(repo_config: Dict, output_dir: str, verbose: bool, state_filter: 
 
 
 def fetch_jira(jira_config: Dict, output_dir: str, verbose: bool, status_filter: str = None) -> bool:
-    """Fetch Jira data (shared across all repos)."""
+    """Fetch Jira data for all configured projects."""
     print_header("Fetching Jira Data")
 
-    project_key = jira_config['project_key']
     jira_url = jira_config['url']
+    projects = jira_config.get('projects', [])
 
     if not check_environment_variable('JIRA_TOKEN'):
         return False
 
-    # Set environment variables for the Jira script
-    env = os.environ.copy()
-    env['PYTHONUNBUFFERED'] = '1'
-    env['JIRA_URL'] = jira_url
-    env['JIRA_PROJECT'] = project_key
+    all_success = True
+    for project in projects:
+        project_key = project['project_key']
+        jql_filter = project.get('jql_filter')
 
-    cmd = [
-        str(SCRIPT_DIR / 'fetch-jira-history'),
-        '--project', project_key,
-        '--jira-url', jira_url,
-        '--output', output_dir,
-    ]
+        label = project_key
+        if jql_filter:
+            label += f" (filter: {jql_filter})"
+        print_info(f"Fetching Jira project: {label}")
 
-    if status_filter:
-        cmd.extend(['--status', status_filter])
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        env['JIRA_URL'] = jira_url
+        env['JIRA_PROJECT'] = project_key
 
-    print_info(f"Running: Jira: {project_key}")
+        cmd = [
+            str(SCRIPT_DIR / 'fetch-jira-history'),
+            '--project', project_key,
+            '--jira-url', jira_url,
+            '--output', output_dir,
+        ]
 
-    if verbose:
-        cmd.append('--verbose')
+        if status_filter:
+            cmd.extend(['--status', status_filter])
+        if jql_filter:
+            cmd.extend(['--jql', jql_filter])
+        if verbose:
+            cmd.append('--verbose')
 
-    try:
-        result = subprocess.run(cmd, check=True, env=env)
-        print_success(f"Completed: Jira: {project_key}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print_error(f"Failed: Jira: {project_key} (exit code {e.returncode})")
-        return False
-    except FileNotFoundError:
-        print_error(f"Command not found: {cmd[0]}")
-        return False
+        try:
+            result = subprocess.run(cmd, check=True, env=env)
+            print_success(f"Completed: Jira: {project_key}")
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed: Jira: {project_key} (exit code {e.returncode})")
+            all_success = False
+        except FileNotFoundError:
+            print_error(f"Command not found: {cmd[0]}")
+            all_success = False
+
+    return all_success
 
 
 def main():
@@ -372,7 +409,11 @@ Run './setup-project' if configuration doesn't exist.
             project_desc = repo.get('project_id') or f"{repo.get('owner')}/{repo.get('repo')}"
             print(f"  • {repo['name']} ({repo['platform'].title()}: {project_desc})")
     if fetch_jira_data:
-        print(f"  • Jira: {jira_config['project_key']}")
+        for proj in jira_config.get('projects', []):
+            label = proj['project_key']
+            if proj.get('jql_filter'):
+                label += f" (filter: {proj['jql_filter']})"
+            print(f"  • Jira: {label}")
 
     if not repos and not fetch_jira_data:
         print_warning("No platforms to fetch from. Run './setup-project' to configure.")
