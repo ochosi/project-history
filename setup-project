@@ -571,6 +571,15 @@ def main():
     if multi_repo:
         _setup_multi_repo(config_file, nearby_repos)
     else:
+        if not detected and len(nearby_repos) == 1:
+            repo = nearby_repos[0]
+            if repo['platform'] and repo['platform_info']:
+                info = repo['platform_info']
+                if repo['platform'] == 'github':
+                    detected = ('github', 'https://github.com',
+                                f"{info['owner']}/{info['repo']}")
+                elif repo['platform'] == 'gitlab':
+                    detected = ('gitlab', info['url'], info['project_id'])
         _setup_single_repo(config_file, detected)
 
 
