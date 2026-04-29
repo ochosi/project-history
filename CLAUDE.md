@@ -37,8 +37,6 @@ When a user opens this repository in Claude Code, they are likely trying to:
    export GITLAB_TOKEN="glpat-..."    # For GitLab
    export JIRA_TOKEN="..."            # For Jira
    export JIRA_EMAIL="user@co.com"   # For Atlassian Cloud (*.atlassian.net)
-   export JIRA_URL="https://..."      # Jira instance URL
-   export JIRA_PROJECT="PROJ"         # Jira project key
    ```
 
 ### Running History Generation
@@ -80,14 +78,23 @@ The project configuration is stored in `.project-history-config.json` (created b
       "url": "https://gitlab.com"
     },
     "jira": {
-      "enabled": false,
+      "enabled": true,
       "url": "https://company.atlassian.net",
-      "project_key": "PROJ"
+      "projects": [
+        {"project_key": "PROJ"},
+        {"project_key": "OTHER", "jql_filter": "component = MyComponent"}
+      ]
     }
   },
   "output_dir": "./history"
 }
 ```
+
+The Jira `projects` array supports one or more project entries. Each entry has a
+required `project_key` and an optional `jql_filter` (a JQL clause fragment
+appended to the base query). The old single-project format (`"project_key": "PROJ"`
+at the top level of the jira object) is still accepted and auto-converted at
+runtime.
 
 ## Authentication
 
@@ -107,8 +114,9 @@ All authentication is done via environment variables (never committed to git):
 ### When the user asks to "generate history":
 1. Verify configuration exists (`.project-history-config.json`)
 2. Verify environment variables are set
-3. Run `./fetch-history` followed by `./generate-history-draft`
-4. Point them to `HISTORY_GENERATION_GUIDE.md` for the curation workflow
+3. If Jira is enabled, follow Step 0 in `HISTORY_GENERATION_GUIDE.md` to check whether JQL filters are needed before fetching
+4. Run `./fetch-history` followed by `./generate-history-draft`
+5. Point them to `HISTORY_GENERATION_GUIDE.md` for the curation workflow
 
 ### When the user asks to "copy these tools to my project":
 1. Copy only the scripts and guide to their project's `tools/` directory:
