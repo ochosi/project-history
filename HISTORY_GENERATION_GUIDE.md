@@ -84,6 +84,63 @@ missing.
 
 ### Phase 1: Data Collection (Day 1)
 
+#### Step 0: Prepare Jira Configuration
+
+**Skip this step if** Jira is not enabled in `.project-history-config.json`,
+or if all Jira project entries already have `jql_filter` values set and the
+user confirms they are correct.
+
+Before fetching Jira data, check whether the configured Jira projects need
+filtering. Many Jira projects are shared across multiple teams or components,
+so fetching every issue in the project may pull in irrelevant data.
+
+**What to do:**
+
+1. Read `.project-history-config.json` and find the `platforms.jira.projects`
+   array. For each project entry, note the `project_key` and whether
+   `jql_filter` is set.
+
+2. For each project without a filter, ask the user:
+   > "The Jira project **PROJECT_KEY** is configured. Does this project
+   > contain only issues relevant to the history you're generating, or is
+   > it shared across multiple components or teams?"
+
+3. If filtering is needed, help the user build a JQL filter clause:
+   - Ask what distinguishes their relevant issues. Common options:
+     - **Component**: `component = "Component Name"`
+     - **Label**: `labels = "label-name"`
+     - **Epic link**: `"Epic Link" = PROJ-123`
+     - **Fix version**: `fixVersion = "2.0"`
+   - The user does not need to know JQL syntax. They can describe what
+     they need (e.g., "issues tagged with the backend label") and you
+     translate it to a JQL clause.
+   - If the user is unsure which field to filter on, offer to examine a
+     reference issue they know is relevant:
+     - If Jira MCP tools are available, use `jira_get_issue` to inspect
+       the issue's components, labels, and other fields.
+     - Otherwise, fetch just that one issue to inspect its fields:
+       ```bash
+       ./tools/fetch-jira-history --project KEY --jql "key = ISSUE-123" \
+           --jira-url URL --output /tmp/jira-inspect --verbose
+       ```
+       Then read the resulting markdown file to see what fields are
+       populated (components, labels, fix versions, etc.).
+   - Construct the JQL fragment and explain it to the user in plain
+     language before applying it.
+
+4. If the user's repositories span multiple Jira projects that are not yet
+   in the config, help them add entries to the `projects` array.
+
+5. Write the `jql_filter` values into `.project-history-config.json`.
+
+6. Before proceeding to Step 1, show the user the complete JQL query that
+   will be constructed for each project entry:
+   ```
+   Project KEY1: project = KEY1 AND component = "MyComponent" ORDER BY created ASC
+   Project KEY2: project = KEY2 ORDER BY created ASC
+   ```
+   Ask the user to confirm before starting the fetch.
+
 #### Step 1: Fetch Platform Data
 
 **Before running**: Read the config file to see which platforms and repos are
