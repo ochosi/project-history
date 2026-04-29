@@ -219,11 +219,12 @@ def parse_gitlab_remote(remote_url: str) -> Tuple[str, str]:
     return gitlab_url, project_path
 
 
-def configure_github() -> Dict:
+def configure_github(detected: Optional[Tuple[str, str, str]] = None) -> Dict:
     """Configure GitHub settings."""
     print_header("GitHub Configuration")
 
-    detected = detect_git_remote()
+    if not detected:
+        detected = detect_git_remote()
     if detected and detected[0] == 'github':
         print_info(f"Detected GitHub repository: {detected[2]}")
         use_detected = get_yes_no("Use detected repository?", default=True)
@@ -251,11 +252,12 @@ def configure_github() -> Dict:
         sys.exit(1)
 
 
-def configure_gitlab() -> Dict:
+def configure_gitlab(detected: Optional[Tuple[str, str, str]] = None) -> Dict:
     """Configure GitLab settings."""
     print_header("GitLab Configuration")
 
-    detected = detect_git_remote()
+    if not detected:
+        detected = detect_git_remote()
     if detected and detected[0] == 'gitlab':
         print_info(f"Detected GitLab repository: {detected[2]}")
         print_info(f"GitLab URL: {detected[1]}")
@@ -608,10 +610,10 @@ def _setup_single_repo(config_file: Path, detected: Optional[Tuple[str, str, str
     }
 
     if use_github:
-        config['platforms']['github'] = configure_github()
+        config['platforms']['github'] = configure_github(detected)
 
     if use_gitlab:
-        config['platforms']['gitlab'] = configure_gitlab()
+        config['platforms']['gitlab'] = configure_gitlab(detected)
 
     # Always ask about Jira
     config['platforms']['jira'] = configure_jira()
