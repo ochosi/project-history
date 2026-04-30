@@ -15,6 +15,7 @@ Transforms raw git history and issue tracking data into narrative documentation:
 
 ## What's Included
 
+- `init-project` - Bootstrap a `tools/` directory in your project (copies scripts + guide)
 - `setup-project` - Interactive configuration wizard for new projects
 - `fetch-github-history` - Fetch all GitHub issues and PRs as markdown
 - `fetch-gitlab-history` - Fetch all GitLab issues and merge requests as markdown
@@ -71,21 +72,15 @@ The `generate-history-draft` script automatically correlates git commits with re
 
 ### Using with Claude Code
 
-1. **Copy the scripts into your project**:
+1. **Initialize the tools in your project**:
    ```bash
    cd /path/to/your-project
-   mkdir -p ./tools
-   cp /path/to/project-history/fetch-* \
-      /path/to/project-history/generate-history-draft \
-      /path/to/project-history/setup-project \
-      /path/to/project-history/HISTORY_GENERATION_GUIDE.md \
-      ./tools/
+   /path/to/project-history/init-project
    ```
-   Do **not** copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other
-   repo files — they belong to the project-history repo and will confuse
-   tools if present in your project.
+   This creates a `tools/` directory with all the necessary scripts and
+   the workflow guide.
 
-2. **Run the interactive setup**:
+2. **Run the interactive setup** (or accept when `init-project` offers):
    ```bash
    ./tools/setup-project
    ```
@@ -127,16 +122,10 @@ The `generate-history-draft` script automatically correlates git commits with re
    cursor .
    ```
 
-2. **Copy the scripts** using Cursor's file explorer or terminal:
+2. **Initialize the tools** using Cursor's terminal:
    ```bash
-   mkdir -p ./tools
-   cp /path/to/project-history/fetch-* \
-      /path/to/project-history/generate-history-draft \
-      /path/to/project-history/setup-project \
-      /path/to/project-history/HISTORY_GENERATION_GUIDE.md \
-      ./tools/
+   /path/to/project-history/init-project
    ```
-   Do **not** copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other repo files.
 
 3. **Set your GitHub token** in Cursor's terminal:
    ```bash
@@ -420,8 +409,10 @@ If auto-detection fails, manually specify your repository during setup or use co
 ```
 
 ### Scripts not executable
+If you used `init-project`, permissions are set automatically. If you copied
+files manually:
 ```bash
-chmod +x setup-project fetch-history fetch-github-history fetch-gitlab-history fetch-jira-history generate-history-draft
+chmod +x tools/setup-project tools/fetch-history tools/fetch-github-history tools/fetch-gitlab-history tools/fetch-jira-history tools/generate-history-draft
 ```
 
 ## Contributing
