@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPTS=(
+    fetch-github-history
+    fetch-gitlab-history
+    fetch-jira-history
+    fetch-history
+    generate-history-draft
+    setup-project
+)
+DOCS=(
+    HISTORY_GENERATION_GUIDE.md
+)
+
+usage() {
+    cat <<'USAGE'
+Usage: init-project [OPTIONS]
+
+Initialize a project-history tools/ directory in the current directory.
+
+Run this from your project's root directory:
+    /path/to/project-history/init-project
+
+Options:
+    -y, --yes     Skip confirmation prompts
+    -h, --help    Show this help message
+USAGE
+}
+
+die() { printf '\033[91mError: %s\033[0m\n' "$1" >&2; exit 1; }
+info() { printf '\033[96m→ %s\033[0m\n' "$1"; }
+success() { printf '\033[92m✓ %s\033[0m\n' "$1"; }
+warn() { printf '\033[93m⚠ %s\033[0m\n' "$1"; }
+
+auto_yes=false
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage; exit 0 ;;
+        -y|--yes)  auto_yes=true ;;
+        *)         die "Unknown option: $arg" ;;
+    esac
+done
+
+# Resolve the project-history repo directory from this script's location
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# Safety: refuse to run inside the project-history repo itself
+TARGET_DIR="$(pwd)"
+if [[ "$TARGET_DIR" == "$REPO_DIR" || "$TARGET_DIR" == "$REPO_DIR"/* ]]; then
+    die "Cannot init inside the project-history repo itself.
+    cd into your project directory first, then run:
+    $0"
+fi
+
+# Verify all source files exist
+missing=()
+for f in "${SCRIPTS[@]}" "${DOCS[@]}"; do
+    [[ -f "$REPO_DIR/$f" ]] || missing+=("$f")
+done
+if (( ${#missing[@]} > 0 )); then
+    die "Missing files in project-history repo: ${missing[*]}"
+fi
+
+# Check for existing tools/ directory
+if [[ -d tools ]]; then
+    existing=()
+    for f in "${SCRIPTS[@]}" "${DOCS[@]}"; do
+        [[ -f "tools/$f" ]] && existing+=("$f")
+    done
+    if (( ${#existing[@]} > 0 )); then
+        warn "tools/ directory already exists. These files will be overwritten:"
+        for f in "${existing[@]}"; do
+            echo "    tools/$f"
+        done
+        if [[ "$auto_yes" != true ]]; then
+            printf '\nContinue? [Y/n] '
+            read -r answer
+            case "${answer:-Y}" in
+                [Yy]*) ;;
+                *)     echo "Cancelled."; exit 2 ;;
+            esac
+        fi
+    fi
+else
+    mkdir -p tools
+    info "Created tools/ directory"
+fi
+
+# Copy files
+for f in "${SCRIPTS[@]}"; do
+    cp -p "$REPO_DIR/$f" "tools/$f"
+    chmod 755 "tools/$f"
+    success "tools/$f"
+done
+for f in "${DOCS[@]}"; do
+    cp -p "$REPO_DIR/$f" "tools/$f"
+    chmod 644 "tools/$f"
+    success "tools/$f"
+done
+
+echo ""
+success "project-history tools initialized!"
+echo ""
+echo "Next steps:"
+echo "  1. Run ./tools/setup-project to configure your project"
+echo "  2. Set authentication tokens (GITHUB_TOKEN, GITLAB_TOKEN, JIRA_TOKEN)"
+echo "  3. Run ./tools/fetch-history to collect data"
+echo "  4. Start your AI assistant and follow tools/HISTORY_GENERATION_GUIDE.md"
+echo ""
+
+# Offer to run setup-project
+if [[ "$auto_yes" != true ]]; then
+    printf 'Run setup-project now? [Y/n] '
+    read -r answer
+    case "${answer:-Y}" in
+        [Yy]*) exec ./tools/setup-project ;;
+        *)     echo "You can run it later: ./tools/setup-project" ;;
+    esac
+fi
