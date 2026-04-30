@@ -65,6 +65,43 @@ def get_yes_no(prompt: str, default: bool = False) -> bool:
         print("  Please enter 'y' or 'n'")
 
 
+def get_numeric_choice(prompt: str, options: int = 2, default: int = 1) -> int:
+    """
+    Get numeric choice input from user.
+
+    Args:
+        prompt: The question to ask the user
+        options: Number of options available
+        default: Default option number (1-indexed)
+
+    Returns:
+        Selected option number as integer
+    """
+    # Build the choices string (e.g., "1/2" or "1/2/3")
+    choices = '/'.join(str(i) for i in range(1, options + 1))
+
+    while True:
+        response = input(f"{prompt} [{choices}]: ").strip()
+
+        # Empty response uses default
+        if not response:
+            return default
+
+        # Validate numeric input
+        try:
+            choice = int(response)
+            if 1 <= choice <= options:
+                return choice
+        except ValueError:
+            pass
+
+        # Error message for invalid input
+        if options == 2:
+            print(f"  Please enter 1 or 2")
+        else:
+            print(f"  Please enter a number between 1 and {options}")
+
+
 def _find_git_root(path: str) -> Optional[str]:
     """
     Find the git repo root at the given path or its immediate parent.
@@ -293,21 +330,40 @@ def configure_jira() -> Dict:
 
     jira_url = get_input("Jira URL (e.g., 'https://mycompany.atlassian.net')")
 
-    projects = []
-    while True:
-        project_key = get_input("Jira project key (e.g., 'PROJ')")
-        projects.append({'project_key': project_key.strip().upper()})
+    # Mode selection: project keys vs custom JQL
+    print_info("You can specify Jira issues in two ways:")
+    print("  1. By project key(s) - specify one or more projects (recommended)")
+    print("  2. Custom JQL query - provide a complete JQL statement")
+    choice = get_numeric_choice("Which method would you like to use?", options=2, default=1)
+    use_custom_jql = (choice == 2)
 
-        if not get_yes_no("Add another Jira project?", default=False):
-            break
+    if use_custom_jql:
+        print_info("Enter a complete JQL query. Include ORDER BY clause if desired.")
+        print_info("Example: project IN (PROJ, ENG) AND status = Done ORDER BY created ASC")
+        custom_jql = get_input("JQL query")
 
-    print_info("JQL filters can be configured later during the history generation workflow")
+        return {
+            'enabled': True,
+            'url': jira_url.strip().rstrip('/'),
+            'custom_jql': custom_jql.strip()
+        }
+    else:
+        # Project-based mode
+        projects = []
+        while True:
+            project_key = get_input("Jira project key (e.g., 'PROJ')")
+            projects.append({'project_key': project_key.strip().upper()})
 
-    return {
-        'enabled': True,
-        'url': jira_url.strip().rstrip('/'),
-        'projects': projects
-    }
+            if not get_yes_no("Add another Jira project?", default=False):
+                break
+
+        print_info("JQL filters can be configured later during the history generation workflow")
+
+        return {
+            'enabled': True,
+            'url': jira_url.strip().rstrip('/'),
+            'projects': projects
+        }
 
 
 def configure_repo(repo_info: Dict, index: int, total: int) -> Dict:

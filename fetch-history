@@ -241,14 +241,49 @@ def fetch_repo(repo_config: Dict, output_dir: str, verbose: bool, state_filter: 
 
 
 def fetch_jira(jira_config: Dict, output_dir: str, verbose: bool, status_filter: str = None) -> bool:
-    """Fetch Jira data for all configured projects."""
+    """Fetch Jira data for all configured projects or using custom JQL."""
     print_header("Fetching Jira Data")
 
     jira_url = jira_config['url']
-    projects = jira_config.get('projects', [])
 
     if not check_environment_variable('JIRA_TOKEN'):
         return False
+
+    # Check for custom JQL mode
+    if 'custom_jql' in jira_config:
+        custom_jql = jira_config['custom_jql']
+        print_info(f"Using custom JQL: {custom_jql}")
+
+        if status_filter:
+            print_warning("Note: --jira-status filter is ignored when using custom JQL")
+            print_warning("      Include status conditions in your JQL query instead")
+
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+
+        cmd = [
+            str(SCRIPT_DIR / 'fetch-jira-history'),
+            '--jira-url', jira_url,
+            '--output', output_dir,
+            '--custom-jql', custom_jql,
+        ]
+
+        if verbose:
+            cmd.append('--verbose')
+
+        try:
+            result = subprocess.run(cmd, check=True, env=env)
+            print_success("Completed: Jira (custom query)")
+            return True
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed: Jira custom query (exit code {e.returncode})")
+            return False
+        except FileNotFoundError:
+            print_error(f"Command not found: {cmd[0]}")
+            return False
+
+    # Project-based mode
+    projects = jira_config.get('projects', [])
 
     all_success = True
     for project in projects:
@@ -409,11 +444,14 @@ Run './setup-project' if configuration doesn't exist.
             project_desc = repo.get('project_id') or f"{repo.get('owner')}/{repo.get('repo')}"
             print(f"  • {repo['name']} ({repo['platform'].title()}: {project_desc})")
     if fetch_jira_data:
-        for proj in jira_config.get('projects', []):
-            label = proj['project_key']
-            if proj.get('jql_filter'):
-                label += f" (filter: {proj['jql_filter']})"
-            print(f"  • Jira: {label}")
+        if 'custom_jql' in jira_config:
+            print(f"  • Jira: Custom JQL - {jira_config['custom_jql']}")
+        else:
+            for proj in jira_config.get('projects', []):
+                label = proj['project_key']
+                if proj.get('jql_filter'):
+                    label += f" (filter: {proj['jql_filter']})"
+                print(f"  • Jira: {label}")
 
     if not repos and not fetch_jira_data:
         print_warning("No platforms to fetch from. Run './setup-project' to configure.")
