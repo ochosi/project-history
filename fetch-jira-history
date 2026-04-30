@@ -34,21 +34,21 @@ class JiraHistoryFetcher:
     RETRY_DELAY = 5
     MAX_RESULTS = 100  # Jira API max per page
 
-    def __init__(self, jira_url: str, project_key: str, token: str, output_dir: str,
+    def __init__(self, jira_url: str, project_key: Optional[str], token: str, output_dir: str,
                  verbose: bool = False, email: str = None):
         """
         Initialize the fetcher.
 
         Args:
             jira_url: Jira instance URL (e.g., 'https://jira.atlassian.com')
-            project_key: Jira project key (e.g., 'PROJ')
+            project_key: Jira project key (e.g., 'PROJ'), or None for custom JQL mode
             token: Jira API token or Personal Access Token
             output_dir: Directory to save markdown files
             verbose: Enable verbose logging
             email: Email for Atlassian Cloud Basic auth
         """
         self.jira_url = jira_url.rstrip('/')
-        self.project_key = project_key.upper()
+        self.project_key = project_key.upper() if project_key else None
         self.token = token
         self.output_dir = Path(output_dir)
         self.verbose = verbose
@@ -433,6 +433,48 @@ url: {url}
         self.log(f"Fetched {len(issues)} total issues", force=True)
         return issues
 
+    def fetch_issues_custom_jql(self, custom_jql: str) -> List[Dict[str, Any]]:
+        """
+        Fetch issues using a complete custom JQL query.
+
+        Args:
+            custom_jql: Complete JQL query string (used as-is)
+
+        Returns:
+            List of issue data
+        """
+        self.log(f"Fetching issues with custom JQL...", force=True)
+        self.log(f"JQL: {custom_jql}", force=True)
+
+        issues = []
+        next_page_token = None
+
+        while True:
+            params = {
+                "jql": custom_jql,
+                "maxResults": self.MAX_RESULTS,
+                "fields": "*all",
+            }
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
+
+            data = self.api_request("search/jql", params)
+
+            page_issues = data.get("issues", [])
+            issues.extend(page_issues)
+
+            self.log(f"  Fetched {len(issues)} issues so far", force=True)
+
+            if data.get("isLast", True):
+                break
+
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
+                break
+
+        self.log(f"Fetched {len(issues)} total issues", force=True)
+        return issues
+
     def save_issues(self, issues: List[Dict[str, Any]]):
         """Save issues as markdown files."""
         existing_files = set()
@@ -478,7 +520,7 @@ url: {url}
             status_counts[status] = status_counts.get(status, 0) + 1
 
         metadata = {
-            "project_key": self.project_key,
+            "project_key": self.project_key or "custom_jql",
             "jira_url": self.jira_url,
             "fetched_at": datetime.utcnow().isoformat() + "Z",
             "stats": {
@@ -564,6 +606,10 @@ Environment variables:
         help="Additional JQL filter clause to append (e.g., 'component = MyComponent')"
     )
     parser.add_argument(
+        "--custom-jql",
+        help="Complete custom JQL query (bypasses project-based query building)"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be fetched without creating files"
@@ -588,35 +634,65 @@ Environment variables:
         print("Error: Jira URL required. Set JIRA_URL environment variable or use --jira-url", file=sys.stderr)
         sys.exit(1)
 
-    # Get project key
-    project_key = args.project or os.getenv("JIRA_PROJECT")
-    if not project_key:
-        print("Error: Jira project key required. Set JIRA_PROJECT environment variable or use --project", file=sys.stderr)
-        sys.exit(1)
+    # Detect and validate mode
+    if args.custom_jql:
+        # Custom JQL mode
+        if args.project:
+            print("Error: Cannot use both --custom-jql and --project", file=sys.stderr)
+            sys.exit(1)
+        if args.jql:
+            print("Error: Cannot use both --custom-jql and --jql (filter)", file=sys.stderr)
+            sys.exit(1)
+        if args.status:
+            print("Warning: --status filter ignored when using --custom-jql", file=sys.stderr)
+
+        project_key = None
+        custom_jql = args.custom_jql
+    else:
+        # Project-based mode
+        project_key = args.project or os.getenv("JIRA_PROJECT")
+        if not project_key:
+            print("Error: Project key required (set JIRA_PROJECT, use --project, or use --custom-jql)", file=sys.stderr)
+            sys.exit(1)
+        custom_jql = None
 
     # Get email (required for Atlassian Cloud)
     email = args.email or os.getenv("JIRA_EMAIL")
 
     if args.dry_run:
-        print(f"Dry run mode - would fetch from Jira project {project_key}")
+        if custom_jql:
+            print(f"Dry run mode - would fetch with custom JQL")
+            print(f"  Custom JQL: {custom_jql}")
+        else:
+            print(f"Dry run mode - would fetch from Jira project {project_key}")
+            if args.jql:
+                print(f"  Additional filter: {args.jql}")
+            if args.status:
+                print(f"  Status filter: {args.status}")
         print(f"  Jira URL: {jira_url}")
         print(f"  Output directory: {args.output}")
-        print(f"  Status filter: {args.status or 'all'}")
-        if args.jql:
-            print(f"  JQL filter: {args.jql}")
+        print(f"  Verbose: {args.verbose}")
         sys.exit(0)
 
     # Run fetcher
     try:
         fetcher = JiraHistoryFetcher(
             jira_url=jira_url,
-            project_key=project_key,
+            project_key=project_key,  # Now optional (None for custom JQL)
             token=token,
             output_dir=args.output,
             verbose=args.verbose,
             email=email
         )
-        fetcher.run(status_filter=args.status, extra_jql=args.jql)
+
+        if custom_jql:
+            # Custom JQL mode
+            issues = fetcher.fetch_issues_custom_jql(custom_jql)
+            fetcher.save_issues(issues)
+            fetcher.generate_metadata(issues)
+        else:
+            # Project-based mode (existing)
+            fetcher.run(status_filter=args.status, extra_jql=args.jql)
     except KeyboardInterrupt:
         print("\nInterrupted by user", file=sys.stderr)
         sys.exit(130)
