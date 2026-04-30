@@ -7,6 +7,7 @@ This repository contains tools for generating comprehensive project histories fr
 **Purpose**: Automated tools + AI-assisted workflow for creating comprehensive project histories
 
 **Key Scripts**:
+- `init-project` - Bootstrap tools/ directory in a target project
 - `fetch-github-history` - Fetch GitHub issues and pull requests
 - `fetch-gitlab-history` - Fetch GitLab issues and merge requests
 - `fetch-jira-history` - Fetch Jira tickets
@@ -111,13 +112,10 @@ All authentication is done via environment variables (never committed to git):
 4. Point them to `HISTORY_GENERATION_GUIDE.md` for the curation workflow
 
 ### When the user asks to "copy these tools to my project":
-1. Copy only the scripts and guide to their project's `tools/` directory:
-   `fetch-history`, `fetch-github-history`, `fetch-gitlab-history`,
-   `fetch-jira-history`, `generate-history-draft`, `setup-project`,
-   and `HISTORY_GENERATION_GUIDE.md`.
-   Do NOT copy `CLAUDE.md`, `README.md`, `.git/`, `tests/`, or other repo files.
-2. Run `./tools/setup-project` from the project root
-3. Guide them through the complete workflow
+1. Have them run `/path/to/project-history/init-project` from their project directory
+2. The script creates `tools/` and copies all necessary files
+3. It offers to run `./tools/setup-project` automatically
+4. Guide them through the complete workflow
 
 ## Important Notes
 
